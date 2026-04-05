@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trading-system-config
+data:
+  APP_ENV: "production"
+  API_V1_PREFIX: "/api/v1"
+  DATABASE_URL: "sqlite:////app/data/trading_system.db"
+  PERSISTENCE_DB_URL: "sqlite:////app/data/trading_system_persistence.db"
+  HTTP_PORT: "8000"
+  DEPLOYMENT_MODE: "kubernetes"
+  ENABLE_LIVE_TRADING: "false"
+  LIVE_TRADING_ARMED: "false"
+  OPS_ENABLED: "true"
+  STARTUP_PREFLIGHT_ENABLED: "true"
+  REQUIRE_PERSISTENCE_FOR_BOOT: "true"
+  RECOVERY_ENABLED: "true"
+  ALERTS_ENABLED: "true"
+  TELEGRAM_RUNTIME_ENABLED: "false"

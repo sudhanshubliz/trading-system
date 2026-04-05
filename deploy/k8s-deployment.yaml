@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trading-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trading-system
+  template:
+    metadata:
+      labels:
+        app: trading-system
+    spec:
+      containers:
+        - name: app
+          image: trading-system:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: trading-system-config
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health/readyz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health/livez
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          startupProbe:
+            httpGet:
+              path: /api/v1/health/livez
+              port: 8000
+            failureThreshold: 12
+            periodSeconds: 5
+          volumeMounts:
+            - name: trading-system-data
+              mountPath: /app/data
+      volumes:
+        - name: trading-system-data
+          emptyDir: {}
