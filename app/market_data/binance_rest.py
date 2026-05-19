@@ -79,3 +79,38 @@ class BinanceRestClient:
 
     async def close(self) -> None:
         await self._client.aclose()
+
+
+class BinanceFuturesRestClient(BinanceRestClient):
+    async def get_mark_price(self, symbol: str) -> dict[str, Any]:
+        payload = await self._get("/fapi/v1/premiumIndex", params={"symbol": symbol.upper()})
+        if not isinstance(payload, dict):
+            raise BinanceRestError("Unexpected premium index response")
+        return payload
+
+    async def get_funding_rate_history(self, symbol: str, *, limit: int = 50) -> list[dict[str, Any]]:
+        payload = await self._get("/fapi/v1/fundingRate", params={"symbol": symbol.upper(), "limit": limit})
+        if not isinstance(payload, list):
+            raise BinanceRestError("Unexpected funding rate history response")
+        return payload
+
+    async def get_ticker_price(self, symbol: str) -> dict[str, Any]:
+        payload = await self._get("/fapi/v1/ticker/price", params={"symbol": symbol.upper()})
+        if not isinstance(payload, dict):
+            raise BinanceRestError("Unexpected futures ticker price response")
+        return payload
+
+    async def get_order_book(self, symbol: str, limit: int = 5) -> dict[str, Any]:
+        payload = await self._get("/fapi/v1/depth", params={"symbol": symbol.upper(), "limit": limit})
+        if not isinstance(payload, dict):
+            raise BinanceRestError("Unexpected futures order book response")
+        return payload
+
+    async def get_klines(self, symbol: str, interval: str, limit: int = 300) -> list[list[Any]]:
+        payload = await self._get(
+            "/fapi/v1/klines",
+            params={"symbol": symbol.upper(), "interval": interval.lower(), "limit": limit},
+        )
+        if not isinstance(payload, list):
+            raise BinanceRestError("Unexpected futures klines response")
+        return payload

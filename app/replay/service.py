@@ -23,6 +23,7 @@ class ReplayService:
         self,
         *,
         candles_source: str | dict | list,
+        futures_candles_source: dict | list | None = None,
         symbols: list[str] | None = None,
         initial_balance: float | None = None,
         strategy_overrides: dict[str, int | float] | None = None,
@@ -30,6 +31,11 @@ class ReplayService:
         start_time=None,
         end_time=None,
         max_bars: int | None = None,
+        fidelity_mode: str | None = None,
+        allow_partial_external_data: bool | None = None,
+        polymarket_snapshots: list[dict[str, object]] | None = None,
+        event_observations: list[dict[str, object]] | None = None,
+        wallet_observations: list[dict[str, object]] | None = None,
     ) -> ReplayRun:
         candles = load_replay_candles(candles_source)
         resolved_symbols = [symbol.upper() for symbol in symbols] if symbols else sorted(candles.keys())
@@ -37,11 +43,21 @@ class ReplayService:
             symbols=resolved_symbols,
             initial_balance=initial_balance or self.settings.paper_account_start_balance,
             candles=candles,
+            futures_candles=load_replay_candles(futures_candles_source) if futures_candles_source else {},
             strategy_overrides=strategy_overrides or {},
             risk_overrides=risk_overrides or {},
             start_time=start_time,
             end_time=end_time,
             max_bars=max_bars,
+            fidelity_mode=fidelity_mode or self.settings.replay_default_fidelity,
+            allow_partial_external_data=(
+                self.settings.replay_allow_partial_external_data
+                if allow_partial_external_data is None
+                else allow_partial_external_data
+            ),
+            polymarket_snapshots=polymarket_snapshots or [],
+            event_observations=event_observations or [],
+            wallet_observations=wallet_observations or [],
         )
         run = await self.engine.run(config)
         self._runs[run.run_id] = run

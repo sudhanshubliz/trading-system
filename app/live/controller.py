@@ -13,6 +13,7 @@ from app.core.logging import log_structured_event
 from app.db.models import SystemState
 from app.db.session import SessionLocal
 from app.execution.live_adapter import BinanceLiveExecutionAdapter, LiveAdapterError
+from app.execution_quality.service import ExecutionQualityService
 from app.execution.types import Position, Trade
 from app.live.guardrails import (
     check_consecutive_losses,
@@ -63,6 +64,7 @@ class LiveController:
         reconciler: object | None = None,
         rollout_service: object | None = None,
         portfolio_service: object | None = None,
+        execution_quality_service: ExecutionQualityService | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.adapter = adapter or BinanceLiveExecutionAdapter(self.settings)
@@ -77,6 +79,7 @@ class LiveController:
         self.reconciler_service = reconciler
         self.rollout_service = rollout_service
         self.portfolio_service = portfolio_service
+        self.execution_quality_service = execution_quality_service
         self._recover_armed_state()
 
     async def arm_live_trading(self) -> LiveStatus:
@@ -287,6 +290,22 @@ class LiveController:
         )
         self.trades_repo.upsert_trade(final_trade)
         self.positions_repo.upsert_position(final_position)
+        if self.execution_quality_service is not None:
+            self.execution_quality_service.record_execution(
+                trade=replace(
+                    final_trade,
+                    execution_price=order_result.executed_price or final_trade.execution_price,
+                ),
+                approval=self.approvals_repo.find_by_assessment_id(assessment_id),
+                assessment=assessment,
+                snapshot=await self._get_market_snapshot(decision.order_request.symbol),
+                mode="live",
+                execution_policy="limit" if decision.order_request.order_type == "LIMIT" else "market",
+                submit_timestamp=trade.opened_at,
+                fill_timestamp=utc_now(),
+                partial_fill_ratio=1.0,
+                notes=[f"exchange_status={order_result.status}"],
+            )
         if self.rollout_service is not None and hasattr(self.rollout_service, "apply_post_trade_rollout_update"):
             self.rollout_service.apply_post_trade_rollout_update()
         self._append_event(

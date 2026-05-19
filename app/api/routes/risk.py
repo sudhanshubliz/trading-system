@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from app.schemas.risk import (
     RiskAssessmentResponse,
     RiskEvaluateSignalsRequest,
     RiskEvaluateSignalsResponse,
+    RiskLockEventListResponse,
     RiskSummaryResponse,
     RiskValidateRequest,
 )
@@ -59,3 +60,20 @@ async def evaluate_signals_risk(
     items = await service.evaluate_signals(payload.symbols)
     serialized = [RiskAssessmentResponse.model_validate(_serialize(item)) for item in items]
     return RiskEvaluateSignalsResponse(items=serialized, count=len(serialized))
+
+
+@router.get("/locks/current", response_model=RiskLockEventListResponse)
+async def get_current_risk_locks(request: Request) -> RiskLockEventListResponse:
+    service = _get_risk_service(request)
+    items = service.list_current_locks()
+    return RiskLockEventListResponse(items=items, count=len(items))
+
+
+@router.get("/locks/history", response_model=RiskLockEventListResponse)
+async def get_risk_lock_history(
+    request: Request,
+    limit: int = Query(default=50, ge=1),
+) -> RiskLockEventListResponse:
+    service = _get_risk_service(request)
+    items = service.list_lock_history(limit=limit)
+    return RiskLockEventListResponse(items=items, count=len(items))

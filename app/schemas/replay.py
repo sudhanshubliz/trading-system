@@ -19,6 +19,12 @@ class ReplayRunRequest(BaseModel):
     symbols: list[str] | None = None
     initial_balance: float = 10000.0
     candles: dict[str, dict[str, list[ReplayCandleInput]]] = Field(default_factory=dict)
+    futures_candles: dict[str, dict[str, list[ReplayCandleInput]]] = Field(default_factory=dict)
+    fidelity_mode: str = "medium"
+    allow_partial_external_data: bool = True
+    polymarket_snapshots: list[dict[str, object]] = Field(default_factory=list)
+    event_observations: list[dict[str, object]] = Field(default_factory=list)
+    wallet_observations: list[dict[str, object]] = Field(default_factory=list)
 
 
 class EquityPointResponse(BaseModel):
@@ -59,6 +65,15 @@ class ReplayMetricsResponse(BaseModel):
     equity_curve: list[EquityPointResponse]
 
 
+class ReplayFidelityMetadataResponse(BaseModel):
+    run_id: str
+    fidelity_mode: str
+    external_dataset_summary: dict[str, int] = Field(default_factory=dict)
+    precision_claim: str
+    notes: list[str] = Field(default_factory=list)
+    generated_at: datetime | None = None
+
+
 class ReplayRunResponse(BaseModel):
     run_id: str
     status: str
@@ -69,6 +84,10 @@ class ReplayRunResponse(BaseModel):
     completed_at: datetime
     trades: list[ReplayTradeResultResponse]
     metrics: ReplayMetricsResponse | None = None
+    phase2_artifacts: dict[str, object] = Field(default_factory=dict)
+    fidelity_notes: list[str] = Field(default_factory=list)
+    fidelity_mode: str = "medium"
+    fidelity_metadata: ReplayFidelityMetadataResponse | None = None
 
 
 class ReplayRunListResponse(BaseModel):

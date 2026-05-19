@@ -43,6 +43,8 @@ class ShadowRunner:
         self.running = True
         self.last_error = None
         self.blocked_reason = None
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._run_loop())
 
     async def stop(self) -> None:
         self.running = False
@@ -111,3 +113,15 @@ class ShadowRunner:
                         payload=payload,
                     )
                 log_structured_event(logger, "shadow_trade_executed", trade_id=position.trade_id, symbol=position.symbol, note=comparison.note)
+
+    async def _run_loop(self) -> None:
+        interval = max(self.execution_service.settings.shadow_cycle_interval_sec, 1)
+        while self.running:
+            try:
+                await self.run_cycle()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.last_error = str(exc)
+                log_structured_event(logger, "shadow_cycle_failure", reason=str(exc))
+            await asyncio.sleep(interval)

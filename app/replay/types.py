@@ -11,11 +11,27 @@ class ReplayRunConfig:
     symbols: list[str]
     initial_balance: float
     candles: dict[str, dict[str, list[Candle]]]
+    futures_candles: dict[str, dict[str, list[Candle]]] = field(default_factory=dict)
     strategy_overrides: dict[str, int | float] = field(default_factory=dict)
     risk_overrides: dict[str, int | float] = field(default_factory=dict)
     start_time: datetime | None = None
     end_time: datetime | None = None
     max_bars: int | None = None
+    fidelity_mode: str = "medium"
+    allow_partial_external_data: bool = True
+    polymarket_snapshots: list[dict[str, object]] = field(default_factory=list)
+    event_observations: list[dict[str, object]] = field(default_factory=list)
+    wallet_observations: list[dict[str, object]] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ReplayFidelityMetadata:
+    run_id: str
+    fidelity_mode: str
+    external_dataset_summary: dict[str, int] = field(default_factory=dict)
+    precision_claim: str = "best_effort"
+    notes: list[str] = field(default_factory=list)
+    generated_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -70,3 +86,7 @@ class ReplayRun:
     completed_at: datetime
     trades: list[ReplayTradeResult] = field(default_factory=list)
     metrics: ReplayMetrics | None = None
+    phase2_artifacts: dict[str, object] = field(default_factory=dict)
+    fidelity_notes: list[str] = field(default_factory=list)
+    fidelity_mode: str = "medium"
+    fidelity_metadata: ReplayFidelityMetadata | None = None

@@ -14,6 +14,7 @@ from app.db.models import SystemState
 from app.db.session import SessionLocal
 from app.execution.approvals import ApprovalStore
 from app.execution.engine import PaperExecutionEngine
+from app.execution_quality.service import ExecutionQualityService
 from app.execution.pnl import build_pnl_summary
 from app.execution.positions import PositionManager
 from app.execution.types import Approval, ControlStatus, PnlSummary, Position, Trade
@@ -48,6 +49,7 @@ class ExecutionService:
         persistence_session_factory: sessionmaker[Session] | None = None,
         live_controller: object | None = None,
         portfolio_service: object | None = None,
+        execution_quality_service: ExecutionQualityService | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.risk_service = risk_service
@@ -68,6 +70,7 @@ class ExecutionService:
         self.events_repo = events_repo
         self.live_controller = live_controller
         self.portfolio_service = portfolio_service
+        self.execution_quality_service = execution_quality_service
         self.persistence_session_factory = (
             persistence_session_factory
             or (approvals_repo.session_factory if approvals_repo is not None else None)
@@ -154,6 +157,7 @@ class ExecutionService:
         self.approvals.load_approval(approved)
 
         latest_price = await self._get_latest_price(approved.symbol)
+        current_snapshot = await self._get_market_snapshot(approved.symbol)
         execution = self.engine.execute(
             approved,
             assessment,
@@ -207,6 +211,16 @@ class ExecutionService:
 
         self._trades[trade.trade_id] = trade
         self._positions[position.position_id] = position
+        if self.execution_quality_service is not None:
+            self.execution_quality_service.record_execution(
+                trade=trade,
+                approval=executed,
+                assessment=assessment,
+                snapshot=current_snapshot,
+                mode=self.execution_mode,
+                execution_policy="simulation_only" if self.execution_mode in {"paper", "shadow"} else "market",
+                partial_fill_ratio=1.0,
+            )
         log_structured_event(
             logger,
             "trade_executed",
@@ -388,6 +402,24 @@ class ExecutionService:
         ticker_snapshot = snapshot if isinstance(snapshot, TickerSnapshot) else snapshot
         last_price = getattr(ticker_snapshot, "last_price", None)
         return float(last_price) if last_price is not None else None
+
+    async def _get_market_snapshot(self, symbol: str) -> TickerSnapshot | None:
+        market_data_service = self.market_data_service
+        if market_data_service is None:
+            return None
+        get_snapshot = getattr(market_data_service, "get_snapshot", None)
+        if get_snapshot is None:
+            return None
+        snapshot = get_snapshot(symbol)
+        if hasattr(snapshot, "__await__"):
+            snapshot = await snapshot
+        if snapshot is None:
+            return None
+        if isinstance(snapshot, TickerSnapshot):
+            return snapshot
+        if isinstance(snapshot, dict):
+            return TickerSnapshot(symbol=symbol.upper(), **snapshot)
+        return snapshot
 
     async def _trading_blocked_by_market_data(self) -> bool:
         if not self.settings.stale_market_data_blocks_trading:
