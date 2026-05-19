@@ -36,6 +36,7 @@ class BinanceWebSocketClient:
             stream_symbol = symbol.lower()
             streams.append(f"{stream_symbol}@miniTicker")
             streams.append(f"{stream_symbol}@depth5@100ms")
+            streams.append(f"{stream_symbol}@aggTrade")
             for timeframe in self._timeframes:
                 streams.append(f"{stream_symbol}@kline_{timeframe}")
         return streams

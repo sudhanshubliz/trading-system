@@ -34,6 +34,12 @@ def recent_swing_low(candles: list[Candle], lookback: int) -> float | None:
     return min(candle.low for candle in candles[-lookback:])
 
 
+def recent_swing_high(candles: list[Candle], lookback: int) -> float | None:
+    if len(candles) < lookback:
+        return None
+    return max(candle.high for candle in candles[-lookback:])
+
+
 def recent_range_high(candles: list[Candle], lookback: int, *, exclude_latest: bool = True) -> float | None:
     if exclude_latest:
         source = candles[:-1]
@@ -42,6 +48,16 @@ def recent_range_high(candles: list[Candle], lookback: int, *, exclude_latest: b
     if len(source) < lookback:
         return None
     return max(candle.high for candle in source[-lookback:])
+
+
+def recent_range_low(candles: list[Candle], lookback: int, *, exclude_latest: bool = True) -> float | None:
+    if exclude_latest:
+        source = candles[:-1]
+    else:
+        source = candles
+    if len(source) < lookback:
+        return None
+    return min(candle.low for candle in source[-lookback:])
 
 
 def recent_average_volume(candles: list[Candle], lookback: int, *, exclude_latest: bool = True) -> float | None:

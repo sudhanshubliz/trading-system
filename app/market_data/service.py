@@ -9,21 +9,25 @@ from typing import Any
 from app.config.settings import Settings, get_settings
 from app.db.models import MarketSnapshot
 from app.db.session import SessionLocal
-from app.market_data.binance_rest import BinanceRestClient, BinanceRestError
+from app.market_data.binance_rest import BinanceFuturesRestClient, BinanceRestClient, BinanceRestError
 from app.market_data.binance_ws import BinanceWebSocketClient
-from app.market_data.cache import CandleCache, OrderBookCache, TickerCache
+from app.market_data.cache import CandleCache, FundingCache, OrderBookCache, TickerCache, TradePrintCache
 from app.market_data.schemas import (
     extract_stream_payload,
     infer_event_type,
     infer_symbol,
     normalize_symbol,
     normalize_timeframe,
+    parse_funding_history_item,
+    parse_funding_snapshot,
     parse_float,
+    parse_order_book_snapshot,
     parse_order_book_top,
     parse_rest_candle,
+    parse_trade_print,
     parse_ws_candle,
 )
-from app.market_data.types import Candle, MarketDataHealth, SymbolHealth, TickerSnapshot
+from app.market_data.types import Candle, FundingRatePoint, FundingSnapshot, MarketDataHealth, OrderBookSnapshot, SymbolHealth, TickerSnapshot, TradePrint
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +44,7 @@ class MarketDataService:
             normalize_timeframe(timeframe) for timeframe in self.settings.market_data_timeframes
         ]
         self.rest_client = BinanceRestClient(self.settings.binance_rest_base_url)
+        self.futures_rest_client = BinanceFuturesRestClient(self.settings.binance_futures_rest_base_url)
         self.ws_client = BinanceWebSocketClient(
             self.settings.binance_ws_base_url,
             self.supported_symbols,
@@ -48,6 +53,8 @@ class MarketDataService:
         self.candle_cache = CandleCache(limit=self.settings.market_data_candle_limit)
         self.orderbook_cache = OrderBookCache()
         self.ticker_cache = TickerCache(self.supported_symbols)
+        self.trade_cache = TradePrintCache(limit=self.settings.market_data_trade_cache_limit)
+        self.funding_cache = FundingCache(history_limit=self.settings.market_data_funding_cache_limit)
         self._lock = asyncio.Lock()
         self._tasks: list[asyncio.Task[None]] = []
         self._started = False
@@ -85,6 +92,7 @@ class MarketDataService:
         self._tasks.clear()
 
         await self.rest_client.close()
+        await self.futures_rest_client.close()
         self._started = False
         logger.info("market data service stopped")
 
@@ -188,6 +196,62 @@ class MarketDataService:
         async with self._lock:
             return self.candle_cache.get(symbol, timeframe)
 
+    async def get_futures_candles(self, symbol: str, timeframe: str, *, limit: int = 200) -> list[Candle] | None:
+        if not self.supports_symbol(symbol) or not self.supports_timeframe(timeframe):
+            return None
+        try:
+            raw_candles = await self.futures_rest_client.get_klines(symbol, timeframe, limit=limit)
+        except BinanceRestError:
+            logger.exception("failed to fetch futures candles symbol=%s timeframe=%s", symbol, timeframe)
+            return None
+        return [parse_rest_candle(item) for item in raw_candles]
+
+    async def get_order_book(self, symbol: str) -> OrderBookSnapshot | None:
+        if not self.supports_symbol(symbol):
+            return None
+        async with self._lock:
+            return self.orderbook_cache.get_snapshot(symbol)
+
+    async def get_recent_trades(self, symbol: str, *, limit: int = 100) -> list[TradePrint]:
+        if not self.supports_symbol(symbol):
+            return []
+        async with self._lock:
+            return self.trade_cache.get(symbol, limit=limit)
+
+    async def get_funding_snapshot(self, symbol: str) -> FundingSnapshot | None:
+        normalized = normalize_symbol(symbol)
+        async with self._lock:
+            cached = self.funding_cache.get_snapshot(normalized)
+        if cached is not None and cached.fetched_at is not None:
+            age_seconds = (utc_now() - cached.fetched_at).total_seconds()
+            if age_seconds <= self.settings.basis_max_data_age_seconds:
+                return cached
+        try:
+            payload = await self.futures_rest_client.get_mark_price(normalized)
+        except BinanceRestError:
+            logger.exception("failed to fetch funding snapshot symbol=%s", normalized)
+            return cached
+        snapshot = parse_funding_snapshot(payload, fetched_at=utc_now())
+        async with self._lock:
+            self.funding_cache.upsert_snapshot(snapshot)
+        return snapshot
+
+    async def get_funding_history(self, symbol: str, *, limit: int = 50) -> list[FundingRatePoint]:
+        normalized = normalize_symbol(symbol)
+        async with self._lock:
+            cached = self.funding_cache.get_history(normalized, limit=limit)
+        if len(cached) >= min(limit, 3):
+            return cached
+        try:
+            payload = await self.futures_rest_client.get_funding_rate_history(normalized, limit=limit)
+        except BinanceRestError:
+            logger.exception("failed to fetch funding history symbol=%s", normalized)
+            return cached
+        history = [parse_funding_history_item(item) for item in payload]
+        async with self._lock:
+            self.funding_cache.seed_history(normalized, history)
+        return history
+
     async def _bootstrap_loop(self) -> None:
         try:
             await self.seed_initial_data()
@@ -221,7 +285,14 @@ class MarketDataService:
                 snapshot = self.ticker_cache.get(symbol)
             elif event_type == "depthUpdate":
                 order_book = parse_order_book_top(symbol, payload)
+                order_book_snapshot = parse_order_book_snapshot(symbol, payload)
                 self.orderbook_cache.upsert(order_book)
+                self.orderbook_cache.upsert_snapshot(
+                    symbol,
+                    bids=order_book_snapshot.bids,
+                    asks=order_book_snapshot.asks,
+                    updated_at=order_book_snapshot.updated_at or now,
+                )
                 self.ticker_cache.upsert_orderbook(
                     symbol,
                     order_book,
@@ -229,6 +300,9 @@ class MarketDataService:
                     status_value="ok",
                 )
                 snapshot = self.ticker_cache.get(symbol)
+            elif event_type == "aggTrade":
+                trade_print = parse_trade_print(payload)
+                self.trade_cache.upsert(trade_print)
             elif event_type == "kline":
                 timeframe, candle = parse_ws_candle(payload)
                 if timeframe in self.supported_timeframes:

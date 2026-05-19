@@ -35,8 +35,14 @@ async def run_replay(payload: ReplayRunRequest, request: Request) -> ReplayRunRe
     service = _get_replay_service(request)
     run = await service.run_replay(
         candles_source=payload.model_dump()["candles"],
+        futures_candles_source=payload.model_dump()["futures_candles"],
         symbols=payload.symbols,
         initial_balance=payload.initial_balance,
+        fidelity_mode=payload.fidelity_mode,
+        allow_partial_external_data=payload.allow_partial_external_data,
+        polymarket_snapshots=payload.polymarket_snapshots,
+        event_observations=payload.event_observations,
+        wallet_observations=payload.wallet_observations,
     )
     return ReplayRunResponse.model_validate(_serialize(run))
 

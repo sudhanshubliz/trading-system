@@ -3,10 +3,7 @@ from __future__ import annotations
 from app.risk.types import RiskCheckResult
 
 
-LONG_ONLY_STRATEGIES = {
-    "trend_follow_continuation",
-    "breakout_confirmation",
-}
+LONG_ONLY_STRATEGIES: set[str] = set()
 
 
 def check_valid_side(side: str) -> RiskCheckResult:

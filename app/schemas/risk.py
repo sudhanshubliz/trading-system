@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.schemas.risk_locks import RiskLockEventResponse
+
 
 class RiskCheckResponse(BaseModel):
     name: str
@@ -41,6 +43,7 @@ class RiskAssessmentResponse(BaseModel):
     checks: list[RiskCheckResponse]
     rejection_reasons: list[str]
     generated_trade_plan: dict[str, float | str | bool | None]
+    active_risk_locks: list[dict[str, object]] = Field(default_factory=list)
     assessed_at: datetime
 
 
@@ -79,4 +82,9 @@ class RiskEvaluateSignalsRequest(BaseModel):
 
 class RiskEvaluateSignalsResponse(BaseModel):
     items: list[RiskAssessmentResponse]
+    count: int
+
+
+class RiskLockEventListResponse(BaseModel):
+    items: list[RiskLockEventResponse]
     count: int

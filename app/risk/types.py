@@ -18,6 +18,7 @@ class RiskValidationInput:
     reward_risk_ratio: float | None
     rationale: list[str]
     generated_at: datetime
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -74,6 +75,7 @@ class RiskAssessment:
     checks: list[RiskCheckResult] = field(default_factory=list)
     rejection_reasons: list[str] = field(default_factory=list)
     generated_trade_plan: dict[str, float | str | bool | None] = field(default_factory=dict)
+    active_risk_locks: list[dict[str, object]] = field(default_factory=list)
     assessed_at: datetime | None = None
 
 

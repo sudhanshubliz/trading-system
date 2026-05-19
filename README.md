@@ -1,358 +1,515 @@
 # trading-system
 
-Minimal FastAPI backend for a trading system with paper, shadow, and tightly guarded live execution paths. Milestone 12 adds advanced analytics, portfolio management, and multi-strategy orchestration on top of the Milestone 11 live rollout policy, capital scaling guardrails, staged phase gating, and automatic rollback controls.
+FastAPI backend for a safe-by-default trading platform with a live-protected execution kernel plus Phase 1, Phase 2, and Phase 3 extensions for Binance alpha, prediction-market research, multi-source fusion, provider-aware safety gating, and promotion-aware portfolio recommendations.
 
-## Overview
+The remaining production-hardening scope is now implemented as well: real/mock/auto-fallback provider wiring for Polymarket, wallet intelligence, and event/news feeds; persisted backfill jobs; higher-fidelity prediction-market replay metadata; correlation-aware portfolio throttles; richer incident workflows; and more operator-friendly live-ops summaries.
 
-This project is a backend-first trading platform for experimenting with market-data ingestion, signal generation, risk checks, paper trading, shadow execution, and guarded live-trading workflows.
+## What This Repo Is Now
 
-Core capabilities:
+The platform is organized as a research-to-execution stack:
 
-- Binance REST and WebSocket market-data ingestion
-- Signal evaluation, approvals, and execution tracking
-- Paper trading, shadow mode, and guarded live execution controls
-- Rollout phases, capital scaling, and rollback protection
-- Portfolio allocation, rebalancing, and multi-strategy orchestration
-- Replay, optimization, reporting, analytics, and ops recovery endpoints
+- `app/market_data`, `app/signals`, `app/risk`, `app/execution`, `app/live`, `app/portfolio`
+  - Existing Binance ingestion, signal evaluation, approvals, paper/shadow/live execution, rollout controls, capital scaling, and portfolio orchestration.
+- `app/features/tradingview_like`
+  - TradingView-style feature extraction in Python. Indicators are features, not standalone trade decisions.
+- `app/regime`
+  - Regime classification for `trending_up`, `trending_down`, `mean_reverting`, `volatile_chop`, `compressed_breakout_setup`, and `risk_off`.
+- `app/alpha_fusion`
+  - Normalized alpha-source readings plus explainable fused opportunities.
+- `app/research`
+  - Experiment, run, and artifact persistence for research and dashboard workflows.
+- `app/arbitrage`
+  - Phase 2 Binance basis/funding opportunity detection, persistence, tradability checks, and alpha-source emission.
+- `app/features/microstructure`
+  - Phase 2 Binance order-book and trade-flow feature extraction with short-horizon microstructure policies.
+- `app/execution_quality`
+  - Phase 2 execution-quality records and scoring for paper, shadow, replay, and guarded live paths.
+- `app/polymarket`
+  - Phase 3 Polymarket provider abstraction, market snapshots, linked-market validation, and mispricing opportunity generation.
+- `app/wallet_intel`
+  - Phase 3 wallet profile scoring, observations, leaderboards, and wallet-driven signals through mock or real-provider scaffolds.
+- `app/event_signals`
+  - Phase 3 normalized event/news framework with timeliness decay, event windows, and structured event signals.
+- `app/provider_health`
+  - Phase 3 provider health snapshots, degradation tracking, and veto hooks for fusion and promotion.
+- `app/portfolio_brain`
+  - Phase 3 explainable allocation recommendations driven by fused opportunities, locks, promotion status, and provider health.
+- `app/promotion`
+  - Phase 3 strategy stage tracking and review logic for research to paper to shadow to guarded live promotion.
+- `app/agents`
+  - Phase 3 OpenClaw orchestration bridge for alerts, approvals, operator notes, and incident logging.
+- `app/simulation`
+  - Phase 3 MiroFish advisory simulation adapter for optional scenario overlays.
 
-## Requirements
+## Safe Startup Flow
 
-- macOS with Python 3.12+
-- Internet access for live Binance market data
-- SQLite, included with Python on macOS
+The default runtime remains safe:
 
-## Quick Start
+- `ENABLE_LIVE_TRADING=false`
+- `LIVE_TRADING_ARMED=false`
+- paper execution remains the default mode
+- shadow mode remains isolated
+- live execution still requires the existing guarded controller, approvals, locks, and rollout policy
+- new intelligence services only generate research, simulated fills, allocation guidance, and candidate opportunities; they do not silently place live orders
 
-### 1. Clone and enter the project
-
-```bash
-cd trading-system
-```
-
-### 2. Create a virtual environment and install dependencies
+Start locally:
 
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -e .
+cp .env.example .env
+uvicorn app.main:app --reload
 ```
 
-### 3. Create your local environment file
+## Phase 1, Phase 2, And Phase 3 Additions
+
+Phase 1 foundation is implemented and persisted:
+
+- TradingView-like feature registry and feature computation
+  - EMA, SMA, RSI, MACD, ATR, VWAP
+  - Donchian, Bollinger, Keltner squeeze
+  - breakout/range compression
+  - simple market structure
+  - order-block / FVG research placeholders
+- regime engine
+- explainable alpha-source readings
+- fused opportunity persistence
+- research experiment/run/artifact persistence
+- Alembic migration support for the new platform tables
+- dashboard-ready APIs for features, alpha sources/fused opportunities, regimes, research, and system intelligence summary
+
+Phase 2 extends the crypto core with:
+
+- Binance basis/funding engine
+  - spot vs perp basis approximation
+  - funding extreme detection
+  - z-score and tradability checks
+  - persisted basis/funding opportunities under `arbitrage_opportunities`
+- Binance microstructure engine
+  - top-of-book spread
+  - top-level and top-N imbalance
+  - microprice
+  - order-book pressure
+  - trade-flow imbalance
+  - burst / volatility / stale-book states
+  - persisted snapshots under `microstructure_feature_snapshots`
+- execution-quality tracking
+  - slippage, latency, partial-fill, and spread-aware scoring
+  - records for paper, shadow, replay, and live execution paths
+- stronger risk locks
+  - stale data
+  - liquidity thin
+  - volatility shock
+  - execution anomaly
+  - basis-data integrity
+- replay integration
+  - deterministic synthetic order-book, tape, and funding approximations from replay candles
+  - persisted replay runs now carry Phase 2 artifacts and fidelity notes
+
+Phase 3 expands the platform into a multi-source intelligence layer with:
+
+- Polymarket mispricing engine
+  - mock plus real-provider scaffolds
+  - market snapshots, order-book snapshots, linked-market validation
+  - yes/no sum dislocation detection, thin-book gap monitoring, linked-market inconsistency checks
+- wallet intelligence
+  - mock provider plus real-provider scaffold
+  - wallet profiles, observations, signals, and leaderboards
+  - follow, fade, ignore, and monitor-only actions
+- event/news framework
+  - normalized events, headlines, and macro-style calendars
+  - pre-event, during-event, post-event, and stale-event handling
+  - importance and timeliness-aware event signals
+- alpha fusion expansion
+  - multi-source weighting for Polymarket, wallet, event, and MiroFish signals
+  - provider-health veto support and source attribution
+- portfolio brain
+  - strategy and market allocation recommendations
+  - lock-aware and provider-aware throttling
+- promotion ladder
+  - strategy status persistence and promotion reviews
+- provider health
+  - provider snapshots and degradation summaries
+- OpenClaw bridge
+  - dry-run-safe alerts, approval payloads, operator notes, and incidents
+- MiroFish adapter
+  - advisory scenario summaries and fusion-compatible scenario signals
+
+Production hardening beyond the Phase 3 scaffold now adds:
+
+- real provider wiring with safe fallback
+  - `mock`, `real`, and `auto_fallback` modes for Polymarket, wallet intelligence, and event/news providers
+  - provider-health-aware degradation instead of brittle hard failure in local or mixed environments
+- stronger replay and backfill workflows
+  - replay fidelity modes with persisted fidelity metadata
+  - external snapshot and annotation support for prediction-market, wallet, and event replay inputs
+  - persisted backfill jobs for Polymarket, wallet, and event datasets
+- portfolio correlation and live-ops polish
+  - bucketed correlation throttles for crypto directional, event-market, and wallet-follow risk
+  - incident lifecycle support for create, acknowledge, resolve, notes, and structured alert history
+  - system summaries that surface unhealthy providers, backfill degradation, promotion blockers, and allocation throttles
+
+## Strategy Families
+
+The target platform supports a portfolio of small risk-controlled edges rather than one god strategy:
+
+- Binance microstructure
+- Binance basis / funding dislocations
+- Polymarket mispricing and linked-market consistency
+- wallet intelligence
+- event / news signals
+- technical feature + regime overlays
+
+The platform now covers the technical feature stack, regime, fusion, Binance basis/funding, Binance microstructure, execution-quality scoring, Polymarket mispricing, wallet intelligence, event/news signals, provider health, promotion reviews, and portfolio-brain recommendations, while still preserving the existing execution kernel.
+
+## Research To Live Ladder
+
+The repo is structured for staged promotion:
+
+1. Research only
+2. Paper
+3. Shadow
+4. Limited live
+5. Scaled live
+6. Institutional-style ops
+
+Phase 3 keeps the same paper/shadow/live safety gates and adds broader intelligence, orchestration, and allocation services without changing the default guarded-live semantics.
+
+## Key APIs
+
+Existing alpha APIs remain available:
+
+- `GET /api/v1/alpha/features/{symbol}`
+- `GET /api/v1/alpha/fused`
+- `POST /api/v1/alpha/fused`
+
+New Phase 1 dashboard APIs:
+
+- `GET /api/v1/features/catalog`
+- `POST /api/v1/features/compute`
+- `POST /api/v1/features/compute/batch`
+- `GET /api/v1/alpha/sources`
+- `GET /api/v1/alpha/fused/{id}`
+- `GET /api/v1/regime/current`
+- `GET /api/v1/regime/history`
+- `GET /api/v1/research/experiments`
+- `GET /api/v1/research/experiments/{id}`
+- `GET /api/v1/research/runs`
+- `GET /api/v1/research/runs/{id}`
+- `GET /api/v1/system/intelligence/summary`
+
+New and extended Phase 2 APIs:
+
+- `GET /api/v1/arbitrage/opportunities`
+- `GET /api/v1/arbitrage/opportunities/{id}`
+- `GET /api/v1/microstructure/current`
+- `GET /api/v1/microstructure/history`
+- `GET /api/v1/execution/quality`
+- `GET /api/v1/execution/quality/{trade_id}`
+- `GET /api/v1/risk/locks/current`
+- `GET /api/v1/risk/locks/history`
+- `GET /api/v1/alpha/sources?source=binance_microstructure`
+- `GET /api/v1/alpha/sources?source=basis_funding`
+
+New Phase 3 APIs:
+
+- `GET /api/v1/polymarket/markets`
+- `GET /api/v1/polymarket/markets/{id}`
+- `GET /api/v1/polymarket/opportunities`
+- `GET /api/v1/polymarket/opportunities/{id}`
+- `GET /api/v1/wallets`
+- `GET /api/v1/wallets/{wallet_id}`
+- `GET /api/v1/wallets/leaderboard`
+- `GET /api/v1/wallets/signals`
+- `GET /api/v1/wallets/observations`
+- `GET /api/v1/events`
+- `GET /api/v1/events/{event_id}`
+- `GET /api/v1/events/signals`
+- `GET /api/v1/events/providers/health`
+- `GET /api/v1/provider-health`
+- `GET /api/v1/provider-health/{provider_name}`
+- `GET /api/v1/provider-health/summary`
+- `GET /api/v1/portfolio/brain`
+- `GET /api/v1/portfolio/allocations/recommendations`
+- `GET /api/v1/portfolio/allocations/history`
+- `GET /api/v1/promotion/status`
+- `POST /api/v1/promotion/review`
+- `GET /api/v1/promotion/ladder`
+- `GET /api/v1/system/operator-notes`
+- `POST /api/v1/system/operator-notes`
+- `GET /api/v1/system/incidents`
+- `GET /api/v1/system/incidents/{id}`
+- `POST /api/v1/system/incidents`
+- `POST /api/v1/system/incidents/{id}/acknowledge`
+- `POST /api/v1/system/incidents/{id}/resolve`
+- `GET /api/v1/system/alerts/history`
+- `POST /api/v1/simulation/mirofish/run`
+- `GET /api/v1/simulation/mirofish/latest`
+- `POST /api/v1/research/backfill-jobs`
+- `GET /api/v1/research/backfill-jobs`
+- `GET /api/v1/research/backfill-jobs/{job_id}`
+
+Example calls:
 
 ```bash
-cp .env.example .env
+curl http://127.0.0.1:8000/api/v1/features/catalog
+
+curl -X POST http://127.0.0.1:8000/api/v1/features/compute \
+  -H "Content-Type: application/json" \
+  -d '{"symbol":"BTCUSDT"}'
+
+curl -X POST http://127.0.0.1:8000/api/v1/alpha/fused \
+  -H "Content-Type: application/json" \
+  -d '{"symbols":["BTCUSDT","ETHUSDT"]}'
+
+curl "http://127.0.0.1:8000/api/v1/alpha/sources?symbol=BTCUSDT"
+
+curl "http://127.0.0.1:8000/api/v1/regime/current?symbol=BTCUSDT"
+
+curl "http://127.0.0.1:8000/api/v1/arbitrage/opportunities?symbol=BTCUSDT&tradable=true"
+
+curl "http://127.0.0.1:8000/api/v1/microstructure/current?symbol=BTCUSDT"
+
+curl "http://127.0.0.1:8000/api/v1/execution/quality?symbol=BTCUSDT&mode=paper"
+
+curl "http://127.0.0.1:8000/api/v1/risk/locks/current"
+
+curl http://127.0.0.1:8000/api/v1/system/intelligence/summary
+
+curl http://127.0.0.1:8000/api/v1/polymarket/opportunities
+
+curl http://127.0.0.1:8000/api/v1/wallets/leaderboard
+
+curl http://127.0.0.1:8000/api/v1/events/signals
+
+curl http://127.0.0.1:8000/api/v1/provider-health/summary
+
+curl -X POST http://127.0.0.1:8000/api/v1/research/backfill-jobs \
+  -H "Content-Type: application/json" \
+  -d '{"dataset_type":"polymarket_markets","provider_name":"polymarket"}'
+
+curl -X POST http://127.0.0.1:8000/api/v1/alpha/fused \
+  -H "Content-Type: application/json" \
+  -d '{"targets":["pm_crypto_etf_approval"]}'
+
+curl http://127.0.0.1:8000/api/v1/portfolio/brain
+
+curl -X POST "http://127.0.0.1:8000/api/v1/promotion/review?strategy_name=prediction_market_phase3"
+
+curl -X POST http://127.0.0.1:8000/api/v1/simulation/mirofish/run \
+  -H "Content-Type: application/json" \
+  -d '{"symbol_or_market":"pm_crypto_etf_approval","payload":{"event_bias":0.4,"polymarket_bias":0.5}}'
+
+curl -X POST http://127.0.0.1:8000/api/v1/system/incidents \
+  -H "Content-Type: application/json" \
+  -d '{"category":"provider_outage","severity":"high","source":"operator","impacted_scope":"provider","title":"Wallet provider unhealthy","related_provider":"wallet_intel"}'
 ```
 
-Important setup notes:
+## Persistence And Migrations
 
-- Keep `ENABLE_LIVE_TRADING=false` unless you are explicitly testing guarded live workflows.
-- Leave `TELEGRAM_SIMULATION_MODE=true` for local development unless you are wiring a real Telegram runtime.
-- The default SQLite files are created locally from `DATABASE_URL` and `PERSISTENCE_DB_URL`.
+The repo now includes Alembic for the persistence database.
 
-### 4. Run the API
+Run the migration:
+
+```bash
+alembic upgrade head
+```
+
+New persisted tables include:
+
+- `feature_runs`
+- `alpha_source_readings`
+- `fused_opportunities`
+- `regime_snapshots`
+- `research_experiments`
+- `experiment_runs`
+- `experiment_artifacts`
+- `microstructure_feature_snapshots`
+
+Phase 2 and roadmap tables:
+
+- `wallet_profiles`, `wallet_observations`, `wallet_signals`
+- `arbitrage_opportunities`
+- `event_observations`, `event_signals`
+- `strategy_allocations`
+- `promotion_reviews`
+- `execution_quality_records`
+- `provider_health_events`
+- `risk_lock_events`
+- `operator_notes`
+- `incident_records`
+
+Phase 3 tables:
+
+- `polymarket_markets`
+- `polymarket_market_snapshots`
+- `linked_market_validations`
+- `provider_health_snapshots`
+- `provider_ingest_runs`
+- `strategy_promotion_status`
+- `alert_history`
+- `portfolio_brain_snapshots`
+- `mirofish_simulation_runs`
+- `backfill_jobs`
+- `replay_fidelity_metadata`
+
+## Configuration
+
+`.env.example` now includes grouped settings for:
+
+- feature engine controls
+- fusion weights
+- regime thresholds
+- research and promotion thresholds
+- Binance microstructure and basis/funding controls
+- execution simulation knobs
+- Polymarket, wallet, and event providers
+- provider modes, timeouts, and real/mock fallback controls
+- Phase 3 alpha fusion weights and health vetoes
+- provider health
+- portfolio brain allocation limits
+- replay fidelity and external partial-data controls
+- backfill batch, retry, and resume controls
+- portfolio correlation bucket caps
+- incident auto-escalation controls
+- promotion ladder thresholds
+- OpenClaw bridge
+- MiroFish adapter
+
+Important safe defaults:
+
+- `ENABLE_LIVE_TRADING=false`
+- `ENABLE_BASIS_FUNDING_ENGINE=true`
+- `ENABLE_MICROSTRUCTURE_ENGINE=true`
+- `ENABLE_POLYMARKET_ENGINE=true`
+- `ENABLE_WALLET_INTEL=true`
+- `ENABLE_EVENT_SIGNALS=true`
+- `EXECUTION_QUALITY_ENABLED=true`
+- `OPENCLAW_DRY_RUN=true`
+- `ENABLE_MIROFISH=false`
+- all Phase 2 risk locks enabled
+
+These settings still only affect analysis, paper, shadow, replay, and guarded approvals unless live trading is explicitly enabled and armed.
+
+## Mock vs Real Providers
+
+Provider integrations are built with safe local defaults:
+
+- `POLYMARKET_PROVIDER_MODE=mock`
+- `WALLET_PROVIDER_MODE=mock`
+- `EVENT_PROVIDER_MODE=mock`
+- `MIROFISH_PROVIDER=mock`
+
+Use `auto_fallback` when you want the real provider first but still need a safe local/dev escape hatch. Legacy aliases like `POLYMARKET_PROVIDER`, `WALLET_PROVIDER`, and `EVENT_PROVIDER` are still accepted for backward compatibility, but `*_PROVIDER_MODE` is now the preferred config surface.
+
+## Replay Fidelity
+
+Replay remains honest about fidelity:
+
+- Basis/funding replay uses candle-derived spot-vs-perp approximations when native historical funding snapshots are not available.
+- Microstructure replay builds deterministic synthetic order-book and trade-flow views from candle paths and volume.
+- Execution-quality replay scores simulated fills against replay snapshots rather than exchange-confirmed venue latency.
+- Prediction-market replay is best-effort and snapshot-based when stored Polymarket or event data is available.
+- Wallet and event replay are driven by stored observations/signals rather than claims of perfect historical discovery timing.
+- Fidelity metadata is persisted per replay run so the UI and reviews can see exactly what external data was and was not available.
+
+## Backfill Jobs
+
+Use `/api/v1/research/backfill-jobs` to seed or refresh Polymarket, wallet, and event datasets in a resumable, idempotent way. Re-running the same dataset/provider/time-range combination returns the same job unless `force=true` is supplied.
+
+## Live Ops
+
+`/api/v1/system/intelligence/summary` now surfaces:
+
+- unhealthy providers
+- active risk locks
+- recent backfill state
+- promotion blockers
+- allocation throttles
+- incident counts
+
+This keeps the platform aligned with the guarded-live design: operators see why the system is throttling or vetoing before any live path is considered.
+
+## Local And Docker
+
+Run locally:
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-The service starts on `http://127.0.0.1:8000` by default.
+Run with Docker:
 
-### 5. Run the test suite
+```bash
+docker build -f deploy/Dockerfile -t trading-system .
+docker run --rm -p 8000:8000 --env-file .env trading-system
+```
+
+Or with compose:
+
+```bash
+docker compose -f deploy/docker-compose.yml up --build
+```
+
+## Tests
+
+Run everything:
 
 ```bash
 pytest
 ```
 
-## Configuration
-
-Primary runtime settings live in [.env.example](/Users/sudhanshu_thakur/Documents/workspace/binance/trading-system/.env.example). The most important groups are:
-
-- market data and Binance endpoints
-- signal-generation thresholds and indicator lookbacks
-- paper-trading and execution controls
-- persistence and reporting settings
-- live-trading guardrails and rollout policy
-- portfolio and analytics configuration
-
-## Endpoints
-
-- `GET /api/v1/health`
-- `GET /api/v1/health/livez`
-- `GET /api/v1/health/readyz`
-- `GET /api/v1/market-data/health`
-- `GET /api/v1/market-data/snapshots`
-- `GET /api/v1/market-data/snapshots/{symbol}`
-- `GET /api/v1/market-data/candles/{symbol}/{timeframe}`
-- `GET /api/v1/signals`
-- `GET /api/v1/signals/{signal_id}`
-- `POST /api/v1/signals/evaluate`
-- `GET /api/v1/risk/summary`
-- `POST /api/v1/risk/validate`
-- `POST /api/v1/risk/evaluate-signals`
-- `GET /api/v1/approvals`
-- `GET /api/v1/approvals/pending`
-- `POST /api/v1/approvals/from-assessment/{id}`
-- `POST /api/v1/approvals/{id}/approve`
-- `POST /api/v1/approvals/{id}/reject`
-- `GET /api/v1/positions`
-- `GET /api/v1/positions/{id}`
-- `GET /api/v1/trades`
-- `GET /api/v1/trades/{id}`
-- `GET /api/v1/pnl`
-- `POST /api/v1/control/pause`
-- `POST /api/v1/control/resume`
-- `GET /api/v1/control/status`
-- `POST /api/v1/replay/run`
-- `GET /api/v1/replay/runs`
-- `GET /api/v1/replay/runs/{run_id}`
-- `GET /api/v1/replay/runs/{run_id}/metrics`
-- `POST /api/v1/optimization/run`
-- `GET /api/v1/optimization/runs`
-- `GET /api/v1/optimization/runs/{run_id}`
-- `GET /api/v1/optimization/runs/{run_id}/leaderboard`
-- `GET /api/v1/reports/daily`
-- `GET /api/v1/reports/weekly`
-- `GET /api/v1/reports/strategy`
-- `GET /api/v1/reports/symbol`
-- `POST /api/v1/shadow/start`
-- `POST /api/v1/shadow/stop`
-- `GET /api/v1/shadow/status`
-- `GET /api/v1/live/status`
-- `POST /api/v1/live/arm`
-- `POST /api/v1/live/disarm`
-- `GET /api/v1/live/locks`
-- `POST /api/v1/live/locks/{lock_id}/clear`
-- `POST /api/v1/live/execute/{assessment_id}`
-- `POST /api/v1/live/reconcile`
-- `GET /api/v1/rollout/status`
-- `POST /api/v1/rollout/phase/{phase}`
-- `POST /api/v1/rollout/scale-up`
-- `POST /api/v1/rollout/scale-down`
-- `POST /api/v1/rollout/rollback`
-- `GET /api/v1/rollout/history`
-- `GET /api/v1/rollout/capital`
-- `GET /api/v1/portfolio/status`
-- `GET /api/v1/portfolio/allocations`
-- `POST /api/v1/portfolio/evaluate`
-- `POST /api/v1/portfolio/rebalance`
-- `GET /api/v1/portfolio/history`
-- `GET /api/v1/analytics/portfolio`
-- `GET /api/v1/analytics/strategy`
-- `GET /api/v1/analytics/symbol`
-- `GET /api/v1/analytics/regime`
-- `GET /api/v1/analytics/attribution`
-- `GET /api/v1/ops/status`
-- `GET /api/v1/ops/incidents`
-- `POST /api/v1/ops/recover`
-
-## Operational Notes
-
-- Live trading is disabled by default and must be explicitly enabled with both `ENABLE_LIVE_TRADING=true` and `LIVE_TRADING_ARMED=true` runtime arming flow before any live order path can proceed.
-- Live rollout policy is an additional mandatory gate for live execution. Live orders are blocked unless the rollout phase is not `disabled`, rollout capital guardrails allow the order, and Milestone 9 hard locks and approvals also pass.
-- Portfolio orchestration is an additional mandatory gate before execution. Candidate ranking, allocation, and portfolio guardrails must pass before live execution can proceed, and this layer does not replace hard locks, rollout policy, or approval checks.
-- Paper and shadow modes continue to work independently of live mode and remain isolated by `execution_mode`.
-- Replay and optimization continue to use replay-local isolated services and never mutate live paper state.
-- Critical runtime state is durably persisted in SQLite:
-  - signals
-  - risk assessments
-  - approvals
-  - trades
-  - positions
-  - replay runs
-  - optimization runs
-  - reports
-  - event store
-  - live locks
-- Startup is restart-safe:
-  - open positions are recovered
-  - pending and executed approvals are recovered
-  - historical trades remain queryable after restart
-  - live arm/disarm state is restored safely
-  - active live locks remain active until cleared or resolved
-  - startup preflight results are exposed via readiness and ops status
-  - manual and startup recovery runs are written to the event store
-- Reports are generated from persisted state only and expose zero-safe outputs when no data exists.
-- Shadow mode reuses live market data, signal, and risk evaluation while persisting isolated `execution_mode="shadow"` trades and approvals.
-- Shadow mode can be started and stopped without affecting normal paper mode.
-- Market-data staleness can block new paper and shadow executions when `STALE_MARKET_DATA_BLOCKS_TRADING=true`.
-- `GLOBAL_PAUSE` and the runtime control endpoints block new executions while keeping reads and reporting available.
-- Live execution is controller-only. Routes and services never call Binance directly; the `LiveController` enforces guardrails, approval checks, and hard locks first.
-- Rollout phases are explicit and persisted:
-  - `disabled`: no live orders
-  - `micro`: initial low-capital rollout
-  - `limited`: moderate staged rollout
-  - `scaled`: full configured live rollout cap
-- Capital scaling and rollback guardrails are persisted and auditable:
-  - total live capital capped by `LIVE_MAX_CAPITAL_TOTAL`
-  - initial phase cap set by `LIVE_INITIAL_CAPITAL_LIMIT`
-  - scale-up requires minimum live trade count, win rate, profit factor, and drawdown/loss thresholds
-  - strategy capital capped by `LIVE_STRATEGY_MAX_CAPITAL_PCT`
-  - symbol capital capped by `LIVE_SYMBOL_MAX_CAPITAL_PCT`
-  - portfolio concentration capped by `LIVE_PORTFOLIO_MAX_CORRELATED_POSITIONS`
-  - auto de-escalation can reduce `scaled -> limited -> micro -> disabled`
-  - critical rollback can auto-disarm live trading when `LIVE_AUTO_DISARM_ON_CRITICAL_ROLLBACK=true`
-- Portfolio allocation and orchestration are explicit and auditable:
-  - allocator enforces total capital, reserve cash, single-trade, per-strategy, per-symbol, and simple correlation-cluster caps
-  - candidate ranking is deterministic and combines score, reward:risk, diversification value, and current exposure
-  - conflicting same-symbol opposite-side candidates are rejected or deferred
-  - orchestration decisions, denials, and rebalance plans are written to persistence
-- Advanced analytics are persistence-backed and zero-safe:
-  - portfolio metrics summarize total pnl, win rate, expectancy, and drawdown
-  - attribution is available by strategy and symbol
-  - execution mode splits expose paper / shadow / live contribution
-  - regime tagging classifies recent performance into `trending`, `ranging`, `high-vol`, or `low-vol`
-- Hard live locks can block or halt live execution automatically:
-  - `GLOBAL_PAUSE`
-  - `MARKET_DATA_STALE`
-  - `DAILY_LOSS_LIMIT`
-  - `WEEKLY_LOSS_LIMIT`
-  - `CONSECUTIVE_LOSS_LIMIT`
-  - `OPEN_RISK_LIMIT`
-  - `OPEN_POSITION_LIMIT`
-  - `EXCHANGE_SYNC_ERROR`
-  - `MANUAL_LIVE_DISARM`
-  - `LIVE_NOT_ARMED`
-  - `APPROVAL_REQUIRED`
-  - `ORDER_VALIDATION_FAILED`
-- Live reconciliation compares persisted live trades and positions against exchange open orders and exchange positions. Critical mismatches activate `EXCHANGE_SYNC_ERROR` and persist audit events.
-
-## Telegram Control Plane
-
-The Telegram runtime path is transport-optional and safe for tests. Supported control commands:
-
-- `/positions`
-- `/pnl`
-- `/risk`
-- `/start_shadow`
-- `/stop_shadow`
-- `/pause`
-- `/resume`
-- `/approve <approval_id|trade_id>`
-- `/reject <approval_id|trade_id>`
-- `/live_status`
-- `/arm_live`
-- `/disarm_live`
-- `/locks`
-- `/incidents`
-- `/recover`
-- `/clear_lock <lock_id>`
-- `/rollout_status`
-- `/set_rollout_phase <disabled|micro|limited|scaled>`
-- `/scale_up`
-- `/scale_down`
-- `/rollback_live`
-- `/capital_status`
-- `/portfolio_status`
-- `/allocations`
-- `/strategy_stats`
-- `/symbol_stats`
-- `/rebalance`
-- `/regime_status`
-
-Trade alerts and approval formatting include:
-
-- entry
-- stop-loss
-- target
-- risk context
-- confidence
-
-Dangerous operator commands use explicit confirmation text when `TELEGRAM_CONFIRM_DANGEROUS_ACTIONS=true`:
-
-- `/arm_live` -> `CONFIRM_ARM`
-- `/disarm_live` -> `CONFIRM_DISARM`
-- `/clear_lock <lock_id>` -> `CONFIRM_CLEAR_LOCK <lock_id>`
-- `/set_rollout_phase <phase>` -> `CONFIRM_SET_ROLLOUT_PHASE <phase>`
-- `/scale_up` -> `CONFIRM_SCALE_UP`
-- `/scale_down` -> `CONFIRM_SCALE_DOWN`
-- `/rollback_live` -> `CONFIRM_ROLLBACK_LIVE`
-- `/resume` -> `CONFIRM_RESUME`
-
-## Persistence And Reporting
-
-- Persistence uses a dedicated SQLite database configured via `PERSISTENCE_DB_URL`.
-- Repository writes sanitize non-finite numbers and store machine-readable payloads for auditability.
-- Major actions are logged and appended to the event store:
-  - signal generation
-  - risk pass / reject
-  - approval receipt
-  - trade creation / execution / close
-  - stop-loss / take-profit events
-  - shadow execution events
-  - live order requested / submitted / rejected
-  - live fill and reconciliation mismatch events
-  - live lock activation / clearance
-- Portfolio and analytics persistence extends auditability with:
-  - portfolio snapshots
-  - allocation and orchestration decisions
-  - candidate denial reasons
-  - rebalance plans
-  - analytics and attribution reports
-- Reporting metrics include:
-  - total trades
-  - win rate
-  - net pnl
-  - expectancy
-  - max drawdown
-  - profit factor
-  - average hold time
-  - risk per trade
-  - equity curve
-  - drawdown timeline
-
-## Live Trading Safety
-
-- Live trading requires explicit environment configuration:
-  - `ENABLE_LIVE_TRADING=true`
-  - valid `BINANCE_API_KEY` and `BINANCE_API_SECRET`
-  - optional runtime arming via `POST /api/v1/live/arm` or `/arm_live`
-- `LIVE_TRADING_ARMED=false` remains the safe startup default.
-- Live execution only proceeds when:
-  - live trading is enabled
-  - runtime arm state is true
-  - no hard live locks are active
-  - global pause is not active
-  - persisted risk assessment exists and is `approved_for_review`
-  - explicit approval exists when required
-  - rollout policy allows the trade
-  - portfolio orchestration allows the trade and sizing
-  - market data is fresh
-  - order validation passes
-- Tests never place real Binance orders. They use fake or stub adapters only.
-
-## Operator UX And Recovery
-
-- `/api/v1/ops/status` returns an operator-facing summary for live arm state, active locks, pause state, market data freshness, exchange and reconciliation health, open live positions, pending approvals, and recent startup or recovery warnings.
-- `/api/v1/ops/incidents` returns alert-friendly recent incidents built from active locks and critical audit events.
-- `/api/v1/ops/recover` runs a safe manual recovery routine that rebuilds in-memory execution indexes from persistence, reloads active locks, reconciles live control state, and optionally attempts live reconciliation when configured.
-- `/api/v1/rollout/status` and `/api/v1/rollout/capital` expose current rollout phase, deployed capital, remaining headroom, and strategy/symbol allocations for alerting and operator review.
-- `/api/v1/rollout/history` exposes persisted rollout phase history.
-- `/api/v1/rollout/phase/{phase}`, `/api/v1/rollout/scale-up`, `/api/v1/rollout/scale-down`, and `/api/v1/rollout/rollback` provide explicit rollout controls with persisted audit events.
-- `/api/v1/portfolio/status`, `/api/v1/portfolio/allocations`, and `/api/v1/portfolio/history` expose deployed capital, free capital, allocation state, orchestration denials, and portfolio audit records.
-- `/api/v1/portfolio/evaluate` evaluates multiple approved candidates under portfolio constraints and returns deterministic ranking and sizing decisions.
-- `/api/v1/portfolio/rebalance` returns a structured rebalance plan when strategy or symbol exposures exceed configured caps.
-- `/api/v1/analytics/portfolio`, `/api/v1/analytics/strategy`, `/api/v1/analytics/symbol`, `/api/v1/analytics/regime`, and `/api/v1/analytics/attribution` expose advanced analytics, attribution, and regime summaries from persistence-backed trade history.
-- `scripts/preflight_check.py` runs startup checks and prints a structured report without requiring external services in tests.
-- `scripts/run_migrations_or_bootstrap.py` safely initializes core and persistence tables.
-
-## Deployment
-
-Example deployment assets live in [`deploy/`](/Users/sudhanshu_thakur/Documents/workspace/binance/trading-system/deploy):
-
-- `Dockerfile` includes a container `HEALTHCHECK` against `/api/v1/health/livez`
-- `docker-compose.yml` mounts persistent SQLite storage, sets a restart policy, and health-checks `/api/v1/health/readyz`
-- Kubernetes example manifests include liveness, readiness, and startup probes
-
-These files are safe-default examples only:
-
-- live trading still requires explicit environment flags and runtime arming
-- no production secrets are committed
-- tests still make no real exchange or Telegram network calls
-
-## Test
+Run the Phase 1 suite only:
 
 ```bash
-cd trading-system
-pytest
+pytest tests/test_alpha_fusion.py tests/test_phase1_platform_intelligence.py tests/test_alembic_migration_smoke.py
 ```
+
+Run the Phase 2 suite only:
+
+```bash
+pytest tests/test_phase2_crypto_core.py tests/test_replay_engine.py tests/test_alembic_migration_smoke.py
+```
+
+Run the Phase 3 suite only:
+
+```bash
+pytest tests/test_phase3_intelligence_platform.py tests/test_alembic_migration_smoke.py
+```
+
+Run the remaining hardening suite only:
+
+```bash
+pytest tests/test_remaining_hardening.py tests/test_alembic_migration_smoke.py
+```
+
+## Docs
+
+- [Architecture](docs/architecture.md)
+- [Feature Engine](docs/feature_engine.md)
+- [Alpha Fusion](docs/alpha_fusion.md)
+- [Binance Basis Funding](docs/binance_basis_funding.md)
+- [Microstructure Engine](docs/microstructure_engine.md)
+- [Execution Quality](docs/execution_quality.md)
+- [Polymarket Engine](docs/polymarket_engine.md)
+- [Polymarket Real Provider](docs/polymarket_provider_real.md)
+- [Wallet Intelligence](docs/wallet_intelligence.md)
+- [Wallet Real Provider](docs/wallet_provider_real.md)
+- [Event Signals](docs/event_signals.md)
+- [Event Real Provider](docs/event_provider_real.md)
+- [Risk Model](docs/risk_model.md)
+- [Risk Locks](docs/risk_locks.md)
+- [Replay Fidelity](docs/replay_fidelity.md)
+- [Prediction Market Replay](docs/prediction_market_replay.md)
+- [Portfolio Brain](docs/portfolio_brain.md)
+- [Portfolio Correlation](docs/portfolio_correlation.md)
+- [Promotion Ladder](docs/promotion_ladder.md)
+- [Provider Health](docs/provider_health.md)
+- [Provider Interfaces](docs/provider_interfaces.md)
+- [OpenClaw Bridge](docs/openclaw_bridge.md)
+- [Backfill Jobs](docs/backfill_jobs.md)
+- [Incidents And Operator Workflows](docs/incidents_and_operator_workflows.md)
+- [Live Ops](docs/live_ops.md)
+- [MiroFish Adapter](docs/mirofish_adapter.md)

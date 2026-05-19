@@ -103,6 +103,8 @@ class FakeRiskService:
 
 
 def test_shadow_mode_flow(tmp_path: Path) -> None:
+    import time
+
     settings = get_settings().model_copy(
         update={
             "persistence_enabled": True,
@@ -110,6 +112,7 @@ def test_shadow_mode_flow(tmp_path: Path) -> None:
             "execution_mode": "shadow",
             "shadow_mode_enabled": True,
             "shadow_auto_approve": True,
+            "shadow_cycle_interval_sec": 1,
             "global_pause": False,
         }
     )
@@ -145,9 +148,10 @@ def test_shadow_mode_flow(tmp_path: Path) -> None:
     with TestClient(app) as client:
         app.state.shadow_service = service
         start_response = client.post("/api/v1/shadow/start")
-        import asyncio
-
-        asyncio.run(service.run_cycle(["BTCUSDT"]))
+        for _ in range(10):
+            if runner.last_cycle_at is not None:
+                break
+            time.sleep(0.1)
         status_response = client.get("/api/v1/shadow/status")
         stop_response = client.post("/api/v1/shadow/stop")
 
@@ -157,3 +161,59 @@ def test_shadow_mode_flow(tmp_path: Path) -> None:
     persisted_trades = trades_repo.list_trades("shadow")
     assert len(persisted_trades) == 1
     assert persisted_trades[0].execution_mode == "shadow"
+
+
+def test_shadow_start_launches_background_cycle(tmp_path: Path) -> None:
+    import asyncio
+
+    settings = get_settings().model_copy(
+        update={
+            "persistence_enabled": True,
+            "persistence_db_url": f"sqlite:///{tmp_path / 'shadow_loop.db'}",
+            "execution_mode": "shadow",
+            "shadow_mode_enabled": True,
+            "shadow_auto_approve": True,
+            "shadow_cycle_interval_sec": 1,
+            "global_pause": False,
+        }
+    )
+    init_persistence_db(settings)
+    session_factory = get_persistence_session_factory(settings.persistence_db_url)
+    approvals_repo = ApprovalsRepository(session_factory)
+    trades_repo = TradesRepository(session_factory)
+    positions_repo = PositionsRepository(session_factory)
+    events_repo = EventsRepository(session_factory)
+    execution_service = ExecutionService(
+        settings=settings,
+        risk_service=FakeRiskService(),
+        market_data_service=FakeMarketDataService(),
+        execution_mode="shadow",
+        approvals_repo=approvals_repo,
+        trades_repo=trades_repo,
+        positions_repo=positions_repo,
+        events_repo=events_repo,
+        persistence_session_factory=session_factory,
+    )
+    runner = ShadowRunner(
+        signal_service=FakeSignalService(),
+        risk_service=FakeRiskService(),
+        execution_service=execution_service,
+        market_data_service=FakeMarketDataService(),
+        auto_approve=True,
+        events_repo=events_repo,
+    )
+    service = ShadowService(runner, settings=settings)
+
+    async def scenario() -> None:
+        await service.start_shadow()
+        for _ in range(10):
+            if runner.last_cycle_at is not None:
+                break
+            await asyncio.sleep(0.1)
+        await service.stop_shadow()
+
+    asyncio.run(scenario())
+
+    persisted_trades = trades_repo.list_trades("shadow")
+    assert runner.last_cycle_at is not None
+    assert len(persisted_trades) >= 1
