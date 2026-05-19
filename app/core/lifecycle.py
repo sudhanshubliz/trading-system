@@ -55,6 +55,7 @@ from app.persistence.repositories.reports_repo import ReportsRepository
 from app.persistence.repositories.risk_repo import RiskRepository
 from app.persistence.repositories.rollout_repo import RolloutRepository
 from app.persistence.repositories.signals_repo import SignalsRepository
+from app.persistence.repositories.strategy_owner_repo import StrategyOwnerRepository
 from app.persistence.repositories.system_records_repo import SystemRecordsRepository
 from app.persistence.repositories.trades_repo import TradesRepository
 from app.persistence.repositories.wallet_repo import WalletRepository
@@ -74,6 +75,7 @@ from app.shadow.runner import ShadowRunner
 from app.shadow.service import ShadowService
 from app.signals.service import SignalService
 from app.simulation.mirofish_adapter import MiroFishAdapter
+from app.strategy_owner.service import StrategyOwnerService
 from app.wallet_intel.service import WalletIntelService
 
 logger = logging.getLogger(__name__)
@@ -107,6 +109,7 @@ async def startup(app: FastAPI) -> None:
     app.state.provider_health_service = None
     app.state.portfolio_brain_service = None
     app.state.promotion_service = None
+    app.state.strategy_owner_service = None
     app.state.openclaw_bridge = None
     app.state.mirofish_adapter = None
     app.state.startup_check_service = None
@@ -154,6 +157,7 @@ async def startup(app: FastAPI) -> None:
         "provider_health_repo": None,
         "portfolio_brain_repo": None,
         "promotion_repo": None,
+        "strategy_owner_repo": None,
         "system_records_repo": None,
         "mirofish_repo": None,
         "session_factory": None,
@@ -192,6 +196,7 @@ async def startup(app: FastAPI) -> None:
                 "provider_health_repo": ProviderHealthRepository(session_factory),
                 "portfolio_brain_repo": PortfolioBrainRepository(session_factory),
                 "promotion_repo": PromotionRepository(session_factory),
+                "strategy_owner_repo": StrategyOwnerRepository(session_factory),
                 "system_records_repo": SystemRecordsRepository(session_factory),
                 "mirofish_repo": MiroFishRepository(session_factory),
                 "session_factory": session_factory,
@@ -371,6 +376,30 @@ async def startup(app: FastAPI) -> None:
         app.state.alpha_fusion_service.promotion_service = app.state.promotion_service
         app.state.alpha_fusion_service.portfolio_brain_service = app.state.portfolio_brain_service
         app.state.alpha_fusion_service.openclaw_bridge = app.state.openclaw_bridge
+
+    if settings.strategy_owner_enabled:
+        app.state.strategy_owner_service = StrategyOwnerService(
+            settings=settings,
+            signal_service=app.state.signal_service,
+            alpha_fusion_service=app.state.alpha_fusion_service,
+            arbitrage_service=app.state.arbitrage_service,
+            microstructure_service=app.state.microstructure_service,
+            polymarket_service=app.state.polymarket_service,
+            wallet_intel_service=app.state.wallet_intel_service,
+            event_signals_service=app.state.event_signals_service,
+            mirofish_adapter=app.state.mirofish_adapter,
+            market_data_service=app.state.market_data_service,
+            provider_health_service=app.state.provider_health_service,
+            execution_quality_service=app.state.execution_quality_service,
+            regime_service=app.state.regime_service,
+            portfolio_brain_service=app.state.portfolio_brain_service,
+            promotion_service=app.state.promotion_service,
+            risk_service=app.state.risk_service,
+            repo=persistence_repos.get("strategy_owner_repo"),
+            events_repo=persistence_repos.get("events_repo"),
+        )
+    else:
+        logger.info("strategy owner service disabled")
 
     if settings.execution_engine_enabled and settings.paper_trading_enabled:
         app.state.execution_service = ExecutionService(

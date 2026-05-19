@@ -36,6 +36,8 @@ def test_alembic_upgrade_creates_platform_tables(tmp_path: Path) -> None:
     assert "mirofish_simulation_runs" in tables
     assert "backfill_jobs" in tables
     assert "replay_fidelity_metadata" in tables
+    assert "strategy_owner_candidates" in tables
+    assert "strategy_owner_decisions" in tables
 
 
 def test_alembic_remaining_hardening_migration_is_safe_if_artifacts_exist(tmp_path: Path) -> None:
