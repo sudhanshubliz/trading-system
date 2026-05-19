@@ -253,6 +253,15 @@ class AlphaFusionService:
                 {**asdict(item), "id": item.opportunity_id}
                 for item in self.polymarket_service.list_persisted_opportunities(limit=limit)
             ]
+        latency_arb_highlights = []
+        if hasattr(self, "latency_arb_service") and self.latency_arb_service is not None and hasattr(self.latency_arb_service, "list_opportunities"):
+            latency_arb_highlights = [
+                asdict(item)
+                for item in self.latency_arb_service.list_opportunities(limit=limit)
+            ]
+        strategy_owner_summary = None
+        if hasattr(self, "strategy_owner_service") and self.strategy_owner_service is not None and hasattr(self.strategy_owner_service, "build_summary"):
+            strategy_owner_summary = asdict(self.strategy_owner_service.build_summary())
         wallet_highlights = []
         if self.wallet_intel_service is not None and hasattr(self.wallet_intel_service, "leaderboard"):
             wallet_highlights = [asdict(item) for item in self.wallet_intel_service.leaderboard(limit=limit)]
@@ -302,8 +311,10 @@ class AlphaFusionService:
             "basis_funding_highlights": basis_highlights,
             "microstructure_status": microstructure,
             "polymarket_highlights": polymarket_highlights,
+            "latency_arb_highlights": latency_arb_highlights,
             "wallet_highlights": wallet_highlights,
             "event_highlights": event_highlights,
+            "strategy_owner_summary": strategy_owner_summary,
             "provider_health": provider_health,
             "mirofish_latest": asdict(mirofish) if mirofish is not None else None,
             "tradability_state": {

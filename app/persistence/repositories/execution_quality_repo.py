@@ -118,6 +118,15 @@ class ExecutionQualityRepository:
         payload = deserialize_payload(payload_json)
         for field in ("decision_timestamp", "submit_timestamp", "fill_timestamp", "recorded_at"):
             payload[field] = ensure_aware_datetime(payload.get(field))
+        payload.setdefault("decision_to_order_latency_ms", payload.get("latency_ms"))
+        payload.setdefault("order_to_fill_latency_ms", None)
+        payload.setdefault("total_latency_ms", payload.get("latency_ms"))
+        payload.setdefault("expected_price", payload.get("intended_price"))
+        payload.setdefault("simulated_fill_price", payload.get("actual_fill_price"))
+        payload.setdefault("slippage_bps", payload.get("realized_slippage_bps"))
+        payload.setdefault("liquidity_used_pct", None)
+        payload.setdefault("stale_data_flag", False)
+        payload.setdefault("provider_health_at_execution", None)
         return ExecutionQualityRecordData(**payload)
 
     def _with_session(self, session: Session | None, callback: Callable[[Session], object]) -> object:

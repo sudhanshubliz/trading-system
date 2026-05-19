@@ -11,6 +11,8 @@ from app.features.microstructure.types import MicrostructureFeatureSnapshot
 from app.market_data.types import OrderBookSnapshot, TickerSnapshot
 from app.polymarket.types import PolymarketOpportunity
 from app.signals.types import CandidateSignal
+from app.strategies.latency_arbitrage.types import LatencyArbOpportunity
+from app.strategies.market_making.types import MarketMakingQuote
 from app.strategy_owner.types import StrategyDecisionCandidate
 from app.wallet_intel.types import WalletSignal
 
@@ -178,7 +180,7 @@ class StrategyOwnerRegistry:
         )
 
     def from_wallet_signal(self, item: WalletSignal) -> StrategyDecisionCandidate:
-        tradable = item.recommended_action in {"follow", "fade"}
+        tradable = item.recommended_action in {"follow", "fade"} and not bool(item.metadata.get("independent_confirmation_required"))
         return StrategyDecisionCandidate(
             candidate_id=f"sod_{item.signal_id}",
             source_name="wallet_intelligence",
@@ -224,12 +226,66 @@ class StrategyOwnerRegistry:
             overall_score=0.0,
             timestamp=item.timestamp,
             expected_holding_period=item.expected_holding_period,
-            tradable=item.direction != "neutral",
+            tradable=item.direction != "neutral" and not bool(item.metadata.get("advisory_only")),
             requires_risk_review=False,
             source_reference_id=item.signal_id,
             strategy_name="event_signals",
             notes=list(item.explanation),
             metadata={"event_id": item.event_id, "raw_signal": item.raw_signal},
+        )
+
+    def from_latency_arb(self, item: LatencyArbOpportunity) -> StrategyDecisionCandidate:
+        return StrategyDecisionCandidate(
+            candidate_id=f"sod_{item.opportunity_id}",
+            source_name="latency_arbitrage",
+            strategy_family="latency_arbitrage",
+            symbol_or_market=item.market_id,
+            direction=item.recommended_direction,
+            confidence=item.confidence,
+            expected_value_bps=item.net_edge_bps,
+            liquidity_score=max(min(item.depth_usd / max(self.settings.latency_arb_min_depth_usd, 1.0), 1.0), 0.0),
+            freshness_score=_age_score(item.timestamp, max_age_seconds=self.settings.latency_arb_max_data_age_sec),
+            execution_quality_score=0.5,
+            provider_health_score=0.65,
+            regime_score=0.55,
+            exposure_score=0.6,
+            historical_performance_score=0.5,
+            overall_score=0.0,
+            timestamp=item.timestamp,
+            expected_holding_period="minutes",
+            tradable=item.tradable,
+            requires_risk_review=False,
+            source_reference_id=item.opportunity_id,
+            strategy_name="latency_arbitrage",
+            notes=list(item.explanation),
+            metadata=item.metadata,
+        )
+
+    def from_market_making(self, item: MarketMakingQuote) -> StrategyDecisionCandidate:
+        return StrategyDecisionCandidate(
+            candidate_id=f"sod_{item.quote_id}",
+            source_name="market_making_research",
+            strategy_family="market_making_research",
+            symbol_or_market=item.market_id,
+            direction="neutral",
+            confidence=min(1.0, item.expected_spread_capture_bps / max(self.settings.market_making_min_spread_bps, 1.0)),
+            expected_value_bps=item.expected_spread_capture_bps,
+            liquidity_score=0.65,
+            freshness_score=_age_score(item.timestamp, max_age_seconds=self.settings.strategy_owner_max_candidate_age_seconds),
+            execution_quality_score=0.45,
+            provider_health_score=0.65,
+            regime_score=0.5,
+            exposure_score=0.65,
+            historical_performance_score=0.45,
+            overall_score=0.0,
+            timestamp=item.timestamp,
+            expected_holding_period="minutes_to_hours",
+            tradable=False,
+            requires_risk_review=False,
+            source_reference_id=item.quote_id,
+            strategy_name="market_making_research",
+            notes=list(item.explanation),
+            metadata={"quoted_bid": item.quoted_bid, "quoted_ask": item.quoted_ask, **item.metadata},
         )
 
     def from_source_reading(self, item: AlphaSourceReading) -> StrategyDecisionCandidate:

@@ -36,6 +36,8 @@ class StrategyOwnerService:
         wallet_intel_service: object | None = None,
         event_signals_service: object | None = None,
         mirofish_adapter: object | None = None,
+        latency_arb_service: object | None = None,
+        market_making_service: object | None = None,
         market_data_service: object | None = None,
         provider_health_service: object | None = None,
         execution_quality_service: object | None = None,
@@ -55,6 +57,8 @@ class StrategyOwnerService:
         self.wallet_intel_service = wallet_intel_service
         self.event_signals_service = event_signals_service
         self.mirofish_adapter = mirofish_adapter
+        self.latency_arb_service = latency_arb_service
+        self.market_making_service = market_making_service
         self.market_data_service = market_data_service
         self.provider_health_service = provider_health_service
         self.execution_quality_service = execution_quality_service
@@ -283,6 +287,16 @@ class StrategyOwnerService:
                 reading = self._mirofish_to_source_reading(latest)
                 candidate = self.registry.from_source_reading(reading)
                 items.append(self.evaluator.enrich_candidate(candidate, provider_names=["mirofish"]))
+
+        if self.latency_arb_service is not None and hasattr(self.latency_arb_service, "evaluate"):
+            for opportunity in await self.latency_arb_service.evaluate():
+                candidate = self.registry.from_latency_arb(opportunity)
+                items.append(self.evaluator.enrich_candidate(candidate, provider_names=["polymarket", "binance_spot_market_data"]))
+
+        if self.market_making_service is not None and hasattr(self.market_making_service, "evaluate_quotes"):
+            for quote in await self.market_making_service.evaluate_quotes():
+                candidate = self.registry.from_market_making(quote)
+                items.append(self.evaluator.enrich_candidate(candidate, provider_names=["polymarket"]))
 
         items.sort(key=lambda item: (item.overall_score, item.confidence, item.expected_value_bps), reverse=True)
         return items[: self.settings.strategy_owner_store_limit]

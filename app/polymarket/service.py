@@ -17,6 +17,8 @@ from app.polymarket.providers import (
     build_polymarket_provider,
 )
 from app.polymarket.types import LinkedMarketValidation, PolymarketMarket, PolymarketOpportunity, PolymarketOrderBook
+from app.probability.bayesian_model import update_probability
+from app.probability.types import ProbabilityEvidence
 from app.provider_health.service import ProviderHealthService
 from app.provider_health.types import ProviderIngestRun
 
@@ -121,6 +123,9 @@ class PolymarketService:
             return self.repo.get_market(market_id)
         return None
 
+    async def get_orderbook(self, market_id: str) -> PolymarketOrderBook | None:
+        return await self.provider.get_orderbook(market_id)
+
     async def evaluate_opportunities(self) -> list[PolymarketOpportunity]:
         markets = await self.list_markets()
         items: list[PolymarketOpportunity] = []
@@ -197,6 +202,23 @@ class PolymarketService:
         fee_estimate = 8.0
         slippage_estimate = max(2.0, 9000.0 / max(depth, 1.0))
         net_edge = gross_edge - fee_estimate - slippage_estimate
+        probability_update = update_probability(
+            prior=max(min(yes_price or 0.5, 0.99), 0.01),
+            evidence=[
+                ProbabilityEvidence(
+                    source_name="yes_no_dislocation",
+                    direction_bias=-1.0 if (deviation or 0.0) > 0 else 1.0,
+                    confidence=min(abs(deviation or 0.0) * 4.0, 1.0),
+                    weight=0.8,
+                ),
+                ProbabilityEvidence(
+                    source_name="liquidity_confidence",
+                    direction_bias=0.0,
+                    confidence=min(depth / max(self.settings.polymarket_min_depth_usd, 1.0), 1.0),
+                    weight=0.4,
+                ),
+            ],
+        )
         confidence = min(1.0, 0.35 + abs(deviation or 0.0) * 4.0 + max(depth / 50000.0, 0.0))
         tradable = (
             not stale_market
@@ -230,7 +252,15 @@ class PolymarketService:
                 f"spread={spread}, depth={depth}",
                 f"tradable={tradable}",
             ],
-            metadata={"category": market.category, "event_slug": market.event_slug},
+            metadata={
+                "category": market.category,
+                "event_slug": market.event_slug,
+                "probability_update": {
+                    "posterior": probability_update.posterior,
+                    "effective_confidence": probability_update.effective_confidence,
+                    "contributions": probability_update.contributions,
+                },
+            },
         )
         self._store_opportunity(item, orderbook)
         return item
@@ -244,18 +274,38 @@ class PolymarketService:
                 by_group.setdefault(item.linked_group, []).append(item)
         opportunities: list[PolymarketOpportunity] = []
         for group_name, grouped in by_group.items():
+            if len(grouped) <= 1:
+                continue
+            orderbooks = {item.market_id: await self.provider.get_orderbook(item.market_id) for item in grouped}
             yes_sum = sum(item.yes_price or 0.0 for item in grouped)
-            deviation = abs(yes_sum - 1.0) if len(grouped) > 1 else 0.0
-            status = "valid" if deviation <= 0.1 else "invalid"
+            deviation = abs(yes_sum - 1.0)
+            stale_count = len(
+                [
+                    item
+                    for item in grouped
+                    if (utc_now() - item.last_updated_at).total_seconds() > self.settings.polymarket_max_data_age_seconds
+                ]
+            )
+            depth_min = min((orderbooks[item.market_id].depth_usd if orderbooks.get(item.market_id) is not None else 0.0) for item in grouped)
+            spread_penalty = sum((orderbooks[item.market_id].spread_bps or 0.0) for item in grouped if orderbooks.get(item.market_id) is not None)
+            fee_estimate = 6.0 * len(grouped)
+            slippage_estimate = max(3.0, (12000.0 / max(depth_min, 1.0))) + spread_penalty * 0.1
+            gross_edge = deviation * 10000 * 0.5
+            net_edge = gross_edge - fee_estimate - slippage_estimate
+            status = "valid" if deviation <= 0.1 or stale_count > 0 or depth_min < self.settings.polymarket_min_depth_usd else "invalid"
             validation = LinkedMarketValidation(
                 validation_id=self._build_id(group_name, "linked", utc_now()),
                 rule_name=group_name,
                 related_markets=[item.market_id for item in grouped],
                 status=status,
                 deviation=round(deviation, 6),
-                explanation=[f"linked sum deviation={round(deviation, 4)}"],
+                explanation=[
+                    f"linked sum deviation={round(deviation, 4)}",
+                    f"depth_min={round(depth_min, 4)}",
+                    f"stale_count={stale_count}",
+                ],
                 detected_at=utc_now(),
-                metadata={"market_count": len(grouped)},
+                metadata={"market_count": len(grouped), "depth_min": depth_min, "stale_count": stale_count},
             )
             self._validations[validation.validation_id] = validation
             if self.repo is not None:
@@ -274,18 +324,22 @@ class PolymarketService:
                     yes_plus_no=yes_sum,
                     deviation_from_one=yes_sum - 1.0,
                     spread=None,
-                    liquidity_estimate=None,
-                    stale_market=False,
-                    gross_edge_estimate=round(deviation * 10000 * 0.5, 6),
-                    fee_estimate=6.0,
-                    slippage_estimate=3.0,
-                    net_edge_estimate=round((deviation * 10000 * 0.5) - 9.0, 6),
-                    confidence=round(min(1.0, 0.4 + deviation * 2.5), 6),
-                    tradable=(deviation * 10000 * 0.5) - 9.0 >= self.settings.polymarket_min_net_edge_bps,
-                    recommended_direction="monitor",
+                    liquidity_estimate=depth_min,
+                    stale_market=stale_count > 0,
+                    gross_edge_estimate=round(gross_edge, 6),
+                    fee_estimate=round(fee_estimate, 6),
+                    slippage_estimate=round(slippage_estimate, 6),
+                    net_edge_estimate=round(net_edge, 6),
+                    confidence=round(min(1.0, 0.4 + deviation * 2.5 + min(depth_min / 20000.0, 0.2)), 6),
+                    tradable=stale_count == 0 and depth_min >= self.settings.polymarket_min_depth_usd and net_edge >= self.settings.polymarket_min_net_edge_bps,
+                    recommended_direction="basket_yes" if (yes_sum - 1.0) < 0 else "basket_no",
                     expected_holding_period="event_window",
                     explanation=validation.explanation,
-                    metadata={"related_markets": validation.related_markets},
+                    metadata={
+                        "related_markets": validation.related_markets,
+                        "basket_required": True,
+                        "settlement_risk_bps": round(5.0 * len(grouped), 6),
+                    },
                 )
                 self._store_opportunity(item, None)
                 opportunities.append(item)

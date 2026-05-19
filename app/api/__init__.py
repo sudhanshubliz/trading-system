@@ -13,6 +13,7 @@ from app.api.routes.market_data import router as market_data_router
 from app.api.routes.microstructure import router as microstructure_router
 from app.api.routes.mirofish import router as mirofish_router
 from app.api.routes.live import router as live_router
+from app.api.routes.latency_arb import router as latency_arb_router
 from app.api.routes.ops import router as ops_router
 from app.api.routes.optimization import router as optimization_router
 from app.api.routes.pnl import router as pnl_router
@@ -53,6 +54,7 @@ api_router.include_router(events_router, tags=["events"])
 api_router.include_router(regime_router, tags=["regime"])
 api_router.include_router(analytics_router, tags=["analytics"])
 api_router.include_router(market_data_router, tags=["market-data"])
+api_router.include_router(latency_arb_router, tags=["latency-arb"])
 api_router.include_router(live_router, tags=["live"])
 api_router.include_router(signals_router, tags=["signals"])
 api_router.include_router(strategy_owner_router, tags=["strategy-owner"])

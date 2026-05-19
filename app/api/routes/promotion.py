@@ -5,7 +5,14 @@ from typing import Any
 
 from fastapi import APIRouter, Query, Request
 
-from app.schemas.promotion import PromotionReviewListResponse, PromotionReviewResponse, StrategyPromotionStatusListResponse, StrategyPromotionStatusResponse
+from app.schemas.promotion import (
+    PromotionBlockersResponse,
+    PromotionEvidenceResponse,
+    PromotionReviewListResponse,
+    PromotionReviewResponse,
+    StrategyPromotionStatusListResponse,
+    StrategyPromotionStatusResponse,
+)
 
 router = APIRouter(prefix="/promotion")
 
@@ -39,9 +46,30 @@ async def review_promotion(request: Request, strategy_name: str = Query(...)) ->
     return PromotionReviewResponse.model_validate(_serialize(review))
 
 
+@router.post("/review/{strategy_family}", response_model=PromotionReviewResponse)
+async def review_promotion_strategy(strategy_family: str, request: Request) -> PromotionReviewResponse:
+    service = _get_service(request)
+    review = service.record_review(strategy_family)
+    return PromotionReviewResponse.model_validate(_serialize(review))
+
+
 @router.get("/ladder", response_model=PromotionReviewListResponse)
 async def get_promotion_ladder(request: Request, limit: int = Query(default=50, ge=1)) -> PromotionReviewListResponse:
     service = _get_service(request)
     items = service.list_reviews(limit=limit)
     serialized = [PromotionReviewResponse.model_validate(_serialize(item)) for item in items]
     return PromotionReviewListResponse(items=serialized, count=len(serialized))
+
+
+@router.get("/blockers/{strategy_family}", response_model=PromotionBlockersResponse)
+async def get_promotion_blockers(strategy_family: str, request: Request) -> PromotionBlockersResponse:
+    service = _get_service(request)
+    payload = service.get_blockers(strategy_family)
+    return PromotionBlockersResponse.model_validate(_serialize(payload))
+
+
+@router.get("/evidence/{strategy_family}", response_model=PromotionEvidenceResponse)
+async def get_promotion_evidence(strategy_family: str, request: Request) -> PromotionEvidenceResponse:
+    service = _get_service(request)
+    payload = _serialize(service.get_evidence(strategy_family))
+    return PromotionEvidenceResponse.model_validate(payload)

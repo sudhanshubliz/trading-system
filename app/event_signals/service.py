@@ -64,6 +64,7 @@ class EventSignalsService:
         self.provider_health_service = provider_health_service
         self._events: OrderedDict[str, NormalizedEvent] = OrderedDict()
         self._signals: OrderedDict[str, EventSignalCandidate] = OrderedDict()
+        self._event_signal_versions: dict[str, tuple[datetime, float]] = {}
 
     async def refresh(self) -> None:
         requested_at = utc_now()
@@ -200,6 +201,10 @@ class EventSignalsService:
             elif (event.sentiment_score or 0.0) < -0.15:
                 direction = "short"
             confidence = min(1.0, event.importance_score * 0.45 + event.relevance_score * 0.3 + decay * 0.25)
+            previous_version = self._event_signal_versions.get(f"{event.event_id}:{entity}")
+            evidence_changed = previous_version is None or event.detection_time > previous_version[0] or abs(confidence - previous_version[1]) >= 0.08
+            if not evidence_changed:
+                continue
             signal = EventSignalCandidate(
                 signal_id=self._build_id(event.event_id, entity, event.detection_time),
                 event_id=event.event_id,
@@ -219,10 +224,18 @@ class EventSignalsService:
                     f"importance={round(event.importance_score, 4)}",
                     f"relevance={round(event.relevance_score, 4)}",
                     f"decay={round(decay, 4)}",
+                    "market_confirmation_preferred=true",
                 ],
-                metadata={"category": event.category, "source": event.source},
+                metadata={
+                    "category": event.category,
+                    "source": event.source,
+                    "advisory_only": True,
+                    "market_confirmation_preferred": True,
+                    "event_window_state": event.event_window_state,
+                },
             )
             signals.append(signal)
+            self._event_signal_versions[f"{event.event_id}:{entity}"] = (event.detection_time, confidence)
         return signals
 
     def _is_duplicate_event(self, event: NormalizedEvent) -> bool:

@@ -38,3 +38,19 @@ class PromotionReviewListResponse(BaseModel):
     items: list[PromotionReviewResponse] = Field(default_factory=list)
     count: int
 
+
+class PromotionBlockersResponse(BaseModel):
+    strategy_name: str
+    current_stage: str
+    eligible: bool
+    blockers: list[str] = Field(default_factory=list)
+    explanation: list[str] = Field(default_factory=list)
+
+
+class PromotionEvidenceResponse(BaseModel):
+    strategy_name: str
+    status: StrategyPromotionStatusResponse
+    recent_execution_quality: list[dict[str, object]] = Field(default_factory=list)
+    recent_trades: list[dict[str, object]] = Field(default_factory=list)
+    latest_review: PromotionReviewResponse | None = None
+    recommendation: dict[str, object] = Field(default_factory=dict)

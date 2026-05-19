@@ -15,6 +15,16 @@
 - Added API routes for strategy-owner candidates, decisions, rejections, evaluation, and summary
 - Added settings and `.env.example` entries for strategy-owner thresholds and weights
 - Wired the new service into `app/core/lifecycle.py`
+- Hardened paper execution to simulate spread, slippage, latency, partial fills, stale-data rejection, and depth-aware fills
+- Extended execution-quality records with detailed latency, liquidity, stale-data, and provider-health execution diagnostics
+- Added `app/probability/` with Bayesian updating, calibration buckets, Brier score, and log-loss helpers
+- Added `app/strategies/latency_arbitrage/` for research-only Polymarket-vs-Binance lag detection and API routes under `/api/v1/latency-arb/*`
+- Added `app/strategies/market_making/` for research-only quote-band generation and strategy-owner visibility
+- Hardened Polymarket linked-market logic with cost, depth, stale-book, and basket metadata
+- Hardened wallet and event signal logic to require independent confirmation rather than acting as direct trade truth
+- Routed replay through `StrategyOwnerService` so replay uses the same candidate-selection layer as the live research stack
+- Extended promotion and risk flows with blockers/evidence visibility and provider-health / promotion live gates
+- Extended the operator dashboard with a `Strategy Owner` page and latency-arbitrage visibility
 
 ## What Was Not Changed
 
@@ -57,7 +67,7 @@ SHADOW_MODE_ENABLED=true
 
 ## How To Run Replay
 
-Use the existing replay endpoints and services. The current work does not change their invocation path.
+Replay still uses the existing endpoints, but now it records strategy-owner decisions in the replay artifact stream so the replay path better matches live research selection.
 
 ## How To View Dashboard
 
@@ -74,8 +84,18 @@ You should still see live disabled or disarmed unless explicitly configured othe
 
 ## Test Results
 
-Pending this iteration’s test pass.
+Verified with:
+
+```bash
+cd /Users/sudhanshu_thakur/Documents/workspace/binance/trading-system
+source .venv/bin/activate
+pytest -q tests/test_strategy_platform_hardening.py tests/test_strategy_owner.py tests/test_phase3_intelligence_platform.py tests/test_alembic_migration_smoke.py
+```
+
+Result:
+
+- `16 passed, 3 warnings`
 
 ## Next Recommended Milestone
 
-Strengthen realistic paper execution so accepted strategy-owner candidates experience venue-aware spread, slippage, stale-data rejection, and depth-aware fills before any live escalation is considered.
+Connect more real external data feeds for the new research modules, then use the now-hardened paper/replay path to measure whether latency-arbitrage and event/prediction-market ideas retain edge after realistic costs.

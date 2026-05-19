@@ -88,6 +88,7 @@ class ExecutionResult:
     approval: Approval
     trade: Trade
     position: Position
+    execution_details: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

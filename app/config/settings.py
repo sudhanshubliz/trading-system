@@ -124,6 +124,7 @@ class Settings(BaseSettings):
     max_open_risk_pct: float = Field(default=6.0, alias="MAX_OPEN_RISK_PCT")
     max_daily_drawdown_pct: float = Field(default=4.0, alias="MAX_DAILY_DRAWDOWN_PCT")
     max_weekly_drawdown_pct: float = Field(default=10.0, alias="MAX_WEEKLY_DRAWDOWN_PCT")
+    max_drawdown_from_ath_pct: float = Field(default=15.0, alias="MAX_DRAWDOWN_FROM_ATH_PCT")
     max_slippage_pct: float = Field(default=0.25, alias="MAX_SLIPPAGE_PCT")
     min_stop_distance_pct: float = Field(default=0.15, alias="MIN_STOP_DISTANCE_PCT")
     max_stop_distance_pct: float = Field(default=5.0, alias="MAX_STOP_DISTANCE_PCT")
@@ -336,6 +337,18 @@ class Settings(BaseSettings):
     enable_provider_health_veto: bool = Field(default=True, alias="ENABLE_PROVIDER_HEALTH_VETO")
     execution_sim_latency_ms: int = Field(default=150, alias="EXECUTION_SIM_LATENCY_MS")
     execution_sim_partial_fill_pct: float = Field(default=0.5, alias="EXECUTION_SIM_PARTIAL_FILL_PCT")
+    paper_execution_base_spread_bps: float = Field(default=2.0, alias="PAPER_EXECUTION_BASE_SPREAD_BPS")
+    paper_execution_base_slippage_bps: float = Field(default=4.0, alias="PAPER_EXECUTION_BASE_SLIPPAGE_BPS")
+    paper_execution_depth_penalty_bps: float = Field(default=12.0, alias="PAPER_EXECUTION_DEPTH_PENALTY_BPS")
+    paper_execution_spread_weight: float = Field(default=0.65, alias="PAPER_EXECUTION_SPREAD_WEIGHT")
+    paper_execution_fill_latency_ms: int = Field(default=250, alias="PAPER_EXECUTION_FILL_LATENCY_MS")
+    paper_execution_latency_depth_penalty_ms: int = Field(default=600, alias="PAPER_EXECUTION_LATENCY_DEPTH_PENALTY_MS")
+    paper_execution_latency_adverse_selection_bps_per_sec: float = Field(default=6.0, alias="PAPER_EXECUTION_LATENCY_ADVERSE_SELECTION_BPS_PER_SEC")
+    paper_execution_adverse_selection_bps: float = Field(default=18.0, alias="PAPER_EXECUTION_ADVERSE_SELECTION_BPS")
+    paper_execution_fee_bps: float = Field(default=10.0, alias="PAPER_EXECUTION_FEE_BPS")
+    paper_execution_synthetic_depth_usd: float = Field(default=25000.0, alias="PAPER_EXECUTION_SYNTHETIC_DEPTH_USD")
+    paper_execution_max_book_levels: int = Field(default=5, alias="PAPER_EXECUTION_MAX_BOOK_LEVELS")
+    paper_execution_min_fill_ratio: float = Field(default=0.25, alias="PAPER_EXECUTION_MIN_FILL_RATIO")
     execution_quality_enabled: bool = Field(default=True, alias="EXECUTION_QUALITY_ENABLED")
     execution_quality_bad_score_threshold: float = Field(
         default=0.45,
@@ -350,6 +363,10 @@ class Settings(BaseSettings):
     enable_execution_anomaly_lock: bool = Field(default=True, alias="ENABLE_EXECUTION_ANOMALY_LOCK")
     enable_liquidity_thin_lock: bool = Field(default=True, alias="ENABLE_LIQUIDITY_THIN_LOCK")
     enable_basis_data_integrity_lock: bool = Field(default=True, alias="ENABLE_BASIS_DATA_INTEGRITY_LOCK")
+    provider_health_required_for_live: bool = Field(default=True, alias="PROVIDER_HEALTH_REQUIRED_FOR_LIVE")
+    promotion_required_for_live: bool = Field(default=True, alias="PROMOTION_REQUIRED_FOR_LIVE")
+    consecutive_loss_pause_count: int = Field(default=5, alias="CONSECUTIVE_LOSS_PAUSE_COUNT")
+    consecutive_loss_pause_minutes: int = Field(default=30, alias="CONSECUTIVE_LOSS_PAUSE_MINUTES")
     enable_portfolio_brain: bool = Field(default=True, alias="ENABLE_PORTFOLIO_BRAIN")
     portfolio_max_strategy_weight: float = Field(default=0.35, alias="PORTFOLIO_MAX_STRATEGY_WEIGHT")
     portfolio_max_market_weight: float = Field(default=0.4, alias="PORTFOLIO_MAX_MARKET_WEIGHT")
@@ -375,6 +392,20 @@ class Settings(BaseSettings):
         default=True,
         alias="INCIDENT_AUTO_CREATE_PROVIDER_FAILURE",
     )
+    latency_arb_enabled: bool = Field(default=False, alias="LATENCY_ARB_ENABLED")
+    latency_arb_paper_only: bool = Field(default=True, alias="LATENCY_ARB_PAPER_ONLY")
+    latency_arb_min_net_edge_bps: float = Field(default=800.0, alias="LATENCY_ARB_MIN_NET_EDGE_BPS")
+    latency_arb_min_depth_usd: float = Field(default=5000.0, alias="LATENCY_ARB_MIN_DEPTH_USD")
+    latency_arb_max_spread_bps: float = Field(default=300.0, alias="LATENCY_ARB_MAX_SPREAD_BPS")
+    latency_arb_max_data_age_sec: int = Field(default=10, alias="LATENCY_ARB_MAX_DATA_AGE_SEC")
+    latency_arb_symbols: list[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"], alias="LATENCY_ARB_SYMBOLS")
+    latency_arb_max_markets: int = Field(default=20, alias="LATENCY_ARB_MAX_MARKETS")
+    market_making_enabled: bool = Field(default=False, alias="MARKET_MAKING_ENABLED")
+    market_making_paper_only: bool = Field(default=True, alias="MARKET_MAKING_PAPER_ONLY")
+    market_making_live_enabled: bool = Field(default=False, alias="MARKET_MAKING_LIVE_ENABLED")
+    market_making_max_inventory_usd: float = Field(default=100.0, alias="MARKET_MAKING_MAX_INVENTORY_USD")
+    market_making_min_spread_bps: float = Field(default=150.0, alias="MARKET_MAKING_MIN_SPREAD_BPS")
+    market_making_reprice_threshold_bps: float = Field(default=75.0, alias="MARKET_MAKING_REPRICE_THRESHOLD_BPS")
     ops_enabled: bool = Field(default=True, alias="OPS_ENABLED")
     startup_preflight_enabled: bool = Field(default=True, alias="STARTUP_PREFLIGHT_ENABLED")
     require_persistence_for_boot: bool = Field(default=True, alias="REQUIRE_PERSISTENCE_FOR_BOOT")
@@ -444,6 +475,7 @@ class Settings(BaseSettings):
             "signals_supported_symbols",
             "alpha_feature_timeframes",
             "optimization_default_symbols",
+            "latency_arb_symbols",
             "live_allowed_phases",
             "event_news_feed_urls",
             "cors_allowed_origins",
@@ -498,6 +530,11 @@ class Settings(BaseSettings):
     @field_validator("optimization_default_symbols", mode="before")
     @classmethod
     def validate_optimization_default_symbols(cls, value: str | list[str] | tuple[str, ...]) -> list[str]:
+        return _split_csv(value, upper=True)
+
+    @field_validator("latency_arb_symbols", mode="before")
+    @classmethod
+    def validate_latency_arb_symbols(cls, value: str | list[str] | tuple[str, ...]) -> list[str]:
         return _split_csv(value, upper=True)
 
     @field_validator("live_allowed_phases", mode="before")

@@ -40,6 +40,8 @@ class RiskService:
         execution_quality_service: ExecutionQualityService | None = None,
         arbitrage_service: object | None = None,
         microstructure_service: object | None = None,
+        provider_health_service: object | None = None,
+        promotion_service: object | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.signal_service = signal_service
@@ -51,6 +53,8 @@ class RiskService:
         self.execution_quality_service = execution_quality_service
         self.arbitrage_service = arbitrage_service
         self.microstructure_service = microstructure_service
+        self.provider_health_service = provider_health_service
+        self.promotion_service = promotion_service
         self.engine = RiskEngine(self.settings, time_provider=self.time_provider)
         self.exposure_manager = ExposureManager(self.settings, time_provider=self.time_provider)
         self._assessments: OrderedDict[str, RiskAssessment] = OrderedDict()
@@ -334,6 +338,19 @@ class RiskService:
                 metrics_snapshot=integrity,
             )
 
+        if self.provider_health_service is not None and hasattr(self.provider_health_service, "any_unhealthy"):
+            provider_unhealthy = bool(self.provider_health_service.any_unhealthy(["polymarket", "wallet_intel", "event_signals"]))
+            self._toggle_lock(
+                enabled=True,
+                condition=provider_unhealthy,
+                lock_type="provider_health_lock",
+                scope="system",
+                scope_key="global",
+                severity="critical",
+                reason="provider_health_degraded",
+                metrics_snapshot={"provider_unhealthy": provider_unhealthy},
+            )
+
         active_current = self.risk_lock_manager.list_current()
         for item in active_current:
             if item.scope == "system" or (item.scope == "symbol" and item.scope_key == symbol):
@@ -366,6 +383,28 @@ class RiskService:
                 rejection_reasons=rejection_reasons,
                 active_risk_locks=payload_locks,
             )
+
+        if self.settings.execution_mode == "live" and self.settings.provider_health_required_for_live and self.provider_health_service is not None and hasattr(self.provider_health_service, "any_unhealthy"):
+            if self.provider_health_service.any_unhealthy():
+                return replace(
+                    assessment,
+                    final_decision="rejected",
+                    failed_checks_count=assessment.failed_checks_count + 1,
+                    checks=[*assessment.checks, RiskCheckResult(name="provider_health_live_gate", passed=False, details="provider_health_unhealthy")],
+                    rejection_reasons=[*assessment.rejection_reasons, "provider_health_unhealthy"],
+                    active_risk_locks=[],
+                )
+        if self.settings.execution_mode == "live" and self.settings.promotion_required_for_live and self.promotion_service is not None and hasattr(self.promotion_service, "get_status"):
+            status = self.promotion_service.get_status(validation_input.strategy_name)
+            if status is None or status.current_stage not in {"guarded_live", "scaled_live"}:
+                return replace(
+                    assessment,
+                    final_decision="rejected",
+                    failed_checks_count=assessment.failed_checks_count + 1,
+                    checks=[*assessment.checks, RiskCheckResult(name="promotion_live_gate", passed=False, details="promotion_stage_insufficient")],
+                    rejection_reasons=[*assessment.rejection_reasons, "promotion_stage_insufficient"],
+                    active_risk_locks=[],
+                )
 
         if active_before:
             for lock in list(self.risk_lock_manager.list_current()):

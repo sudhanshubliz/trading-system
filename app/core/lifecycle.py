@@ -76,6 +76,8 @@ from app.shadow.service import ShadowService
 from app.signals.service import SignalService
 from app.simulation.mirofish_adapter import MiroFishAdapter
 from app.strategy_owner.service import StrategyOwnerService
+from app.strategies.latency_arbitrage.service import LatencyArbitrageService
+from app.strategies.market_making.service import MarketMakingResearchService
 from app.wallet_intel.service import WalletIntelService
 
 logger = logging.getLogger(__name__)
@@ -110,6 +112,8 @@ async def startup(app: FastAPI) -> None:
     app.state.portfolio_brain_service = None
     app.state.promotion_service = None
     app.state.strategy_owner_service = None
+    app.state.latency_arb_service = None
+    app.state.market_making_service = None
     app.state.openclaw_bridge = None
     app.state.mirofish_adapter = None
     app.state.startup_check_service = None
@@ -314,6 +318,22 @@ async def startup(app: FastAPI) -> None:
         events_repo=persistence_repos.get("events_repo"),
     )
 
+    app.state.latency_arb_service = LatencyArbitrageService(
+        settings=settings,
+        market_data_service=app.state.market_data_service,
+        polymarket_service=app.state.polymarket_service,
+        provider_health_service=app.state.provider_health_service,
+        source_repo=persistence_repos.get("alpha_sources_repo"),
+        events_repo=persistence_repos.get("events_repo"),
+    )
+
+    app.state.market_making_service = MarketMakingResearchService(
+        settings=settings,
+        polymarket_service=app.state.polymarket_service,
+        source_repo=persistence_repos.get("alpha_sources_repo"),
+        events_repo=persistence_repos.get("events_repo"),
+    )
+
     if settings.alpha_fusion_enabled:
         app.state.alpha_fusion_service = AlphaFusionService(
             settings=settings,
@@ -348,6 +368,7 @@ async def startup(app: FastAPI) -> None:
             execution_quality_service=app.state.execution_quality_service,
             arbitrage_service=app.state.arbitrage_service,
             microstructure_service=app.state.microstructure_service,
+            provider_health_service=app.state.provider_health_service,
         )
         if app.state.alpha_fusion_service is not None:
             app.state.alpha_fusion_service.risk_service = app.state.risk_service
@@ -362,6 +383,8 @@ async def startup(app: FastAPI) -> None:
         events_repo=persistence_repos.get("events_repo"),
         repo=persistence_repos.get("promotion_repo"),
     )
+    if app.state.risk_service is not None:
+        app.state.risk_service.promotion_service = app.state.promotion_service
 
     app.state.portfolio_brain_service = PortfolioBrainService(
         settings=settings,
@@ -376,6 +399,7 @@ async def startup(app: FastAPI) -> None:
         app.state.alpha_fusion_service.promotion_service = app.state.promotion_service
         app.state.alpha_fusion_service.portfolio_brain_service = app.state.portfolio_brain_service
         app.state.alpha_fusion_service.openclaw_bridge = app.state.openclaw_bridge
+        app.state.alpha_fusion_service.latency_arb_service = app.state.latency_arb_service
 
     if settings.strategy_owner_enabled:
         app.state.strategy_owner_service = StrategyOwnerService(
@@ -388,6 +412,8 @@ async def startup(app: FastAPI) -> None:
             wallet_intel_service=app.state.wallet_intel_service,
             event_signals_service=app.state.event_signals_service,
             mirofish_adapter=app.state.mirofish_adapter,
+            latency_arb_service=app.state.latency_arb_service,
+            market_making_service=app.state.market_making_service,
             market_data_service=app.state.market_data_service,
             provider_health_service=app.state.provider_health_service,
             execution_quality_service=app.state.execution_quality_service,
@@ -401,6 +427,13 @@ async def startup(app: FastAPI) -> None:
     else:
         logger.info("strategy owner service disabled")
 
+    if app.state.market_making_service is not None:
+        app.state.market_making_service.strategy_owner_service = app.state.strategy_owner_service
+    if app.state.alpha_fusion_service is not None:
+        app.state.alpha_fusion_service.strategy_owner_service = app.state.strategy_owner_service
+    if app.state.portfolio_brain_service is not None:
+        app.state.portfolio_brain_service.strategy_owner_service = app.state.strategy_owner_service
+
     if settings.execution_engine_enabled and settings.paper_trading_enabled:
         app.state.execution_service = ExecutionService(
             settings=settings,
@@ -412,6 +445,7 @@ async def startup(app: FastAPI) -> None:
             events_repo=persistence_repos.get("events_repo"),
             persistence_session_factory=persistence_repos.get("session_factory"),
             execution_quality_service=app.state.execution_quality_service,
+            provider_health_service=app.state.provider_health_service,
         )
         app.state.execution_service.recover_state()
     else:
@@ -479,6 +513,8 @@ async def startup(app: FastAPI) -> None:
             execution_quality_service=app.state.execution_quality_service,
             arbitrage_service=app.state.arbitrage_service,
             microstructure_service=app.state.microstructure_service,
+            provider_health_service=app.state.provider_health_service,
+            promotion_service=app.state.promotion_service,
         )
         shadow_execution_service = ExecutionService(
             settings=shadow_settings,
@@ -491,6 +527,7 @@ async def startup(app: FastAPI) -> None:
             events_repo=persistence_repos.get("events_repo"),
             persistence_session_factory=persistence_repos.get("session_factory"),
             execution_quality_service=app.state.execution_quality_service,
+            provider_health_service=app.state.provider_health_service,
         )
         shadow_execution_service.recover_state()
         runner = ShadowRunner(

@@ -26,6 +26,7 @@ from app.replay.types import EquityPoint, ReplayFidelityMetadata, ReplayRun, Rep
 from app.risk.locks import RiskLockManager
 from app.risk.service import RiskService
 from app.signals.service import SignalService
+from app.strategy_owner.service import StrategyOwnerService
 
 
 def utc_now() -> datetime:
@@ -312,12 +313,22 @@ class ReplayEngine:
             use_persistent_control_state=False,
             execution_quality_service=execution_quality_service,
         )
+        strategy_owner_service = StrategyOwnerService(
+            settings=local_settings,
+            signal_service=signal_service,
+            arbitrage_service=arbitrage_service,
+            microstructure_service=microstructure_service,
+            market_data_service=replay_market_data,
+            execution_quality_service=execution_quality_service,
+            risk_service=risk_service,
+        )
 
         events = self._build_events(replay_candles, config.symbols)
         equity_curve: list[EquityPoint] = []
         basis_artifacts: list[dict[str, object]] = []
         microstructure_artifacts: list[dict[str, object]] = []
         risk_rejections: list[dict[str, object]] = []
+        strategy_owner_artifacts: list[dict[str, object]] = []
 
         for timestamp, symbols_at_step in events:
             clock.set(timestamp)
@@ -338,29 +349,44 @@ class ReplayEngine:
             }
             traded_this_candle: set[tuple[str, str]] = set()
 
-            signals = await signal_service.evaluate_symbols(
-                list(symbols_at_step),
-                generated_at=timestamp,
+            evaluation = await strategy_owner_service.evaluate(symbols=list(symbols_at_step))
+            strategy_owner_artifacts.extend(
+                [
+                    {
+                        "candidate_id": decision.candidate_id,
+                        "status": decision.status,
+                        "strategy_family": decision.strategy_family,
+                        "symbol_or_market": decision.symbol_or_market,
+                        "rejection_reason": decision.rejection_reason,
+                        "timestamp": decision.timestamp,
+                    }
+                    for decision in evaluation.decisions
+                ]
             )
-            for signal in signals:
-                key = (signal.symbol, signal.strategy_name)
+            candidate_by_id = {candidate.candidate_id: candidate for candidate in evaluation.candidates}
+            for decision in evaluation.decisions:
+                if decision.status != "accepted_for_risk" or decision.risk_assessment_id is None:
+                    if decision.status in {"rejected", "rejected_by_risk"}:
+                        risk_rejections.append(
+                            {
+                                "signal_id": decision.candidate_id,
+                                "symbol": decision.symbol_or_market,
+                                "decision": decision.status,
+                                "rejection_reasons": [decision.rejection_reason] if decision.rejection_reason else [],
+                                "active_risk_locks": [],
+                                "timestamp": timestamp,
+                            }
+                        )
+                    continue
+                candidate = candidate_by_id.get(decision.candidate_id)
+                if candidate is None:
+                    continue
+                key = (candidate.symbol_or_market, candidate.strategy_name or candidate.strategy_family)
                 if key in open_keys or key in traded_this_candle:
                     continue
-
-                assessment = await risk_service.validate_signal_payload(signal)
-                if assessment.final_decision != "approved_for_review":
-                    risk_rejections.append(
-                        {
-                            "signal_id": assessment.signal_id,
-                            "symbol": assessment.symbol,
-                            "decision": assessment.final_decision,
-                            "rejection_reasons": list(assessment.rejection_reasons),
-                            "active_risk_locks": _serialize(assessment.active_risk_locks),
-                            "timestamp": timestamp,
-                        }
-                    )
+                assessment = risk_service.get_assessment(decision.risk_assessment_id)
+                if assessment is None or assessment.final_decision != "approved_for_review":
                     continue
-
                 approval = await execution_service.create_approval_from_assessment(assessment.assessment_id)
                 try:
                     await execution_service.approve_and_execute(approval.approval_id)
@@ -423,6 +449,7 @@ class ReplayEngine:
         phase2_artifacts = {
             "basis_funding_opportunities": basis_artifacts,
             "microstructure_snapshots": microstructure_artifacts,
+            "strategy_owner_decisions": strategy_owner_artifacts,
             "risk_rejections": risk_rejections,
             "execution_quality_records": _serialize(execution_quality_service.list_records(limit=500)),
             "risk_lock_events": _serialize(risk_lock_manager.list_history(limit=500)),
@@ -430,6 +457,7 @@ class ReplayEngine:
             "summary": {
                 "basis_opportunity_count": len(basis_artifacts),
                 "microstructure_snapshot_count": len(microstructure_artifacts),
+                "strategy_owner_decision_count": len(strategy_owner_artifacts),
                 "risk_rejection_count": len(risk_rejections),
                 "execution_quality_count": len(execution_quality_service.list_records(limit=500)),
                 "risk_lock_event_count": len(risk_lock_manager.list_history(limit=500)),

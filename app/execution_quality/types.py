@@ -23,6 +23,15 @@ class ExecutionQualityRecordData:
     expected_slippage_bps: float | None
     realized_slippage_bps: float | None
     latency_ms: float | None
+    decision_to_order_latency_ms: float | None
+    order_to_fill_latency_ms: float | None
+    total_latency_ms: float | None
+    expected_price: float | None
+    simulated_fill_price: float | None
+    slippage_bps: float | None
+    liquidity_used_pct: float | None
+    stale_data_flag: bool
+    provider_health_at_execution: str | None
     partial_fill_ratio: float
     fill_quality_score: float
     notes: list[str]
