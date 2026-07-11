@@ -23,5 +23,12 @@ class LatencyArbOpportunity:
     time_to_expiry_seconds: float
     tradable: bool
     recommended_direction: str
+    outcome_name: str = "YES"
+    execution_price: float | None = None
+    fill_ratio: float = 0.0
+    reference_fidelity: str = "unknown"
+    book_source: str = "unknown"
+    rejection_reasons: list[str] = field(default_factory=list)
+    paper_only: bool = True
     explanation: list[str] = field(default_factory=list)
     metadata: dict[str, object] = field(default_factory=dict)

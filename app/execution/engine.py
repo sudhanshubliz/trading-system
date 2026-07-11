@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from app.config.settings import Settings
+from app.execution.costs import calculate_fee, calculate_prediction_market_fee
 from app.execution.types import Approval, ExecutionResult, Position, Trade
 from app.market_data.types import OrderBookLevel, OrderBookSnapshot, TickerSnapshot
 from app.risk.types import RiskAssessment
@@ -81,6 +82,21 @@ class PaperExecutionEngine:
 
         trade_id = self._build_id("trd", approval.approval_id)
         position_id = self._build_id("pos", trade_id)
+        entry_notional = fill.fill_price * fill.fill_quantity
+        fee_model = str(trade_plan.get("fee_model") or "fixed_bps")
+        fee_rate = float(trade_plan.get("fee_rate") or 0.0)
+        entry_fee = (
+            self._calculate_entry_fee(
+                fee_model=fee_model,
+                fee_rate=fee_rate,
+                shares=fill.fill_quantity,
+                price=fill.fill_price,
+                notional=entry_notional,
+            )
+            if self.settings.execution_mode in {"paper", "shadow"}
+            else 0.0
+        )
+        entry_slippage_cost = abs(fill.fill_price - fill.expected_price) * fill.fill_quantity
 
         trade = Trade(
             trade_id=trade_id,
@@ -101,7 +117,13 @@ class PaperExecutionEngine:
             execution_mode=self.settings.execution_mode,
             opened_at=fill.fill_timestamp,
             updated_at=fill.fill_timestamp,
+            realized_pnl=round(-entry_fee, 6),
+            gross_realized_pnl=0.0,
+            fees_paid=round(entry_fee, 6),
+            slippage_cost=round(entry_slippage_cost, 6),
             failure_reason=None,
+            fee_model=fee_model,
+            fee_rate=fee_rate,
         )
 
         position = Position(
@@ -123,7 +145,13 @@ class PaperExecutionEngine:
             status="open",
             opened_at=fill.fill_timestamp,
             updated_at=fill.fill_timestamp,
+            realized_pnl=round(-entry_fee, 6),
+            gross_realized_pnl=0.0,
+            fees_paid=round(entry_fee, 6),
+            slippage_cost=round(entry_slippage_cost, 6),
             execution_mode=self.settings.execution_mode,
+            fee_model=fee_model,
+            fee_rate=fee_rate,
         )
 
         return ExecutionResult(
@@ -146,6 +174,11 @@ class PaperExecutionEngine:
                 "partial_fill_ratio": fill.partial_fill_ratio,
                 "stale_data_flag": fill.stale_data_flag,
                 "provider_health_at_execution": provider_health_status,
+                "entry_fee": round(entry_fee, 6),
+                "entry_slippage_cost": round(entry_slippage_cost, 6),
+                "fee_bps": self.settings.paper_execution_fee_bps if fee_model == "fixed_bps" else None,
+                "fee_model": fee_model,
+                "fee_rate": fee_rate,
                 "notes": fill.notes,
             },
         )
@@ -163,7 +196,12 @@ class PaperExecutionEngine:
         decision_timestamp: datetime,
         now: datetime,
     ) -> PaperFillOutcome:
-        stale_data_flag = self._is_stale(snapshot=snapshot, order_book=order_book, now=now)
+        stale_data_flag = self._is_stale(
+            symbol=symbol,
+            snapshot=snapshot,
+            order_book=order_book,
+            now=now,
+        )
         if stale_data_flag and self.settings.stale_market_data_blocks_trading:
             raise ValueError("stale_market_data")
 
@@ -221,11 +259,10 @@ class PaperExecutionEngine:
 
         adjusted_fill_price = self._apply_bps(fill_price, adverse_selection_bps, side=side_value)
         realized_slippage_bps = abs((adjusted_fill_price - expected_price) / max(expected_price, 1e-9)) * 10000.0
-        fees_bps = self.settings.paper_execution_fee_bps
         notes = [
             f"depth_notional={round(depth_notional, 6)}",
             f"liquidity_used_pct={round(liquidity_used_pct, 6)}",
-            f"fees_bps={round(fees_bps, 6)}",
+            f"fees_bps={round(self.settings.paper_execution_fee_bps, 6)}",
         ]
         if partial_fill_ratio < 1.0:
             notes.append("partial_fill_applied")
@@ -238,8 +275,8 @@ class PaperExecutionEngine:
             partial_fill_ratio=round(partial_fill_ratio, 6),
             arrival_mid_price=round(arrival_mid, 6) if arrival_mid is not None else None,
             expected_price=round(expected_price, 6),
-            expected_slippage_bps=round(expected_slippage_bps + fees_bps, 6),
-            realized_slippage_bps=round(realized_slippage_bps + fees_bps, 6),
+            expected_slippage_bps=round(expected_slippage_bps, 6),
+            realized_slippage_bps=round(realized_slippage_bps, 6),
             liquidity_used_pct=round(liquidity_used_pct, 6),
             stale_data_flag=stale_data_flag,
             submit_timestamp=submit_timestamp,
@@ -291,14 +328,38 @@ class PaperExecutionEngine:
             return 0.0, 0.0, visible_depth_notional
         return consumed_notional / consumed_qty, consumed_qty, visible_depth_notional
 
-    def _is_stale(self, *, snapshot: TickerSnapshot | None, order_book: OrderBookSnapshot | None, now: datetime) -> bool:
-        stale_cutoff_ticker = timedelta(milliseconds=self.settings.market_data_ticker_freshness_ms)
-        stale_cutoff_book = timedelta(seconds=max(self.settings.microstructure_stale_book_seconds, 1))
+    def _is_stale(
+        self,
+        *,
+        symbol: str,
+        snapshot: TickerSnapshot | None,
+        order_book: OrderBookSnapshot | None,
+        now: datetime,
+    ) -> bool:
+        if symbol.upper().startswith("PM_"):
+            stale_cutoff_ticker = timedelta(seconds=max(self.settings.latency_arb_max_data_age_sec, 1))
+            stale_cutoff_book = stale_cutoff_ticker
+        else:
+            stale_cutoff_ticker = timedelta(milliseconds=self.settings.market_data_ticker_freshness_ms)
+            stale_cutoff_book = timedelta(seconds=max(self.settings.microstructure_stale_book_seconds, 1))
         snapshot_ts = snapshot.snapshot_time or snapshot.ticker_updated_at if snapshot is not None else None
         orderbook_ts = order_book.updated_at if order_book is not None else (snapshot.orderbook_updated_at if snapshot is not None else None)
         snapshot_stale = snapshot_ts is None or now - snapshot_ts > stale_cutoff_ticker
         orderbook_stale = orderbook_ts is None or now - orderbook_ts > stale_cutoff_book
         return snapshot_stale or orderbook_stale
+
+    def _calculate_entry_fee(
+        self,
+        *,
+        fee_model: str,
+        fee_rate: float,
+        shares: float,
+        price: float,
+        notional: float,
+    ) -> float:
+        if fee_model == "polymarket_probability":
+            return calculate_prediction_market_fee(shares=shares, price=price, fee_rate=fee_rate)
+        return calculate_fee(notional, self.settings.paper_execution_fee_bps)
 
     def _resolve_price(self, latest_market_price: float | None, fallback_entry_price: float) -> float:
         if latest_market_price is not None and latest_market_price > 0:

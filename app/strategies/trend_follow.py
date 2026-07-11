@@ -39,9 +39,12 @@ class TrendFollowContinuationStrategy(SignalStrategy):
 
         distance_to_ema = abs(setup_close - setup.ema_fast) / setup_close
         distance_to_vwap = abs(setup_close - setup.vwap) / setup_close
-        if (
-            distance_to_ema > context.settings.signals_pullback_tolerance_pct
-            or distance_to_vwap > context.settings.signals_pullback_tolerance_pct
+        regime_gap_pct = abs(regime.ema_fast - regime.ema_slow) / setup_close
+        if not self._pullback_is_valid(
+            distance_to_ema=distance_to_ema,
+            distance_to_vwap=distance_to_vwap,
+            regime_gap_pct=regime_gap_pct,
+            context=context,
         ):
             return None
 
@@ -50,9 +53,21 @@ class TrendFollowContinuationStrategy(SignalStrategy):
         average_range_pct = recent_average_range_percent(context.trigger_candles, 20)
         if average_range_pct is None or average_range_pct < context.settings.signals_min_trigger_range_pct:
             return None
+        trigger_candle = context.trigger_candles[-1]
+        trigger_body_pct = abs(trigger_candle.close - trigger_candle.open) / latest_close * 100
+        is_green_trigger = trigger_candle.close >= trigger_candle.open
+        is_red_trigger = trigger_candle.close <= trigger_candle.open
 
         if is_bullish_regime:
-            if latest_close <= trigger.previous_close:
+            if not is_green_trigger and not self._allow_countertrend_trigger(
+                side="long",
+                trigger_body_pct=trigger_body_pct,
+                average_range_pct=average_range_pct,
+                trigger_hist=trigger_hist,
+                trigger_rsi=trigger.rsi,
+                regime_gap_pct=regime_gap_pct,
+                context=context,
+            ):
                 return None
             if trigger_hist < 0:
                 return None
@@ -81,9 +96,21 @@ class TrendFollowContinuationStrategy(SignalStrategy):
                 "15m pullback is near fast EMA and VWAP support",
                 "5m trigger shows positive momentum with RSI above neutral",
             ]
+            if distance_to_vwap > context.settings.signals_pullback_tolerance_pct:
+                rationale.append("15m VWAP is lagging the trend, but fast EMA support and regime strength still anchor the pullback")
+            if not is_green_trigger:
+                rationale.append("5m trigger candle is shallow and counter-color, but continuation strength remains intact")
             side = "long"
         else:
-            if latest_close >= trigger.previous_close:
+            if not is_red_trigger and not self._allow_countertrend_trigger(
+                side="short",
+                trigger_body_pct=trigger_body_pct,
+                average_range_pct=average_range_pct,
+                trigger_hist=trigger_hist,
+                trigger_rsi=trigger.rsi,
+                regime_gap_pct=regime_gap_pct,
+                context=context,
+            ):
                 return None
             if trigger_hist > 0:
                 return None
@@ -112,6 +139,10 @@ class TrendFollowContinuationStrategy(SignalStrategy):
                 "15m rebound is near fast EMA and VWAP resistance",
                 "5m trigger shows negative momentum with RSI below neutral",
             ]
+            if distance_to_vwap > context.settings.signals_pullback_tolerance_pct:
+                rationale.append("15m VWAP is lagging the trend, but fast EMA resistance and regime strength still anchor the rebound")
+            if not is_red_trigger:
+                rationale.append("5m trigger candle is shallow and counter-color, but continuation strength remains intact")
             side = "short"
 
         confidence_score = score_signal(
@@ -138,4 +169,61 @@ class TrendFollowContinuationStrategy(SignalStrategy):
             indicators_snapshot=context.indicators.as_dict(),
             generated_at=context.generated_at,
             status="candidate",
+        )
+
+    def _allow_countertrend_trigger(
+        self,
+        *,
+        side: str,
+        trigger_body_pct: float,
+        average_range_pct: float,
+        trigger_hist: float,
+        trigger_rsi: float,
+        regime_gap_pct: float,
+        context: StrategyContext,
+    ) -> bool:
+        if average_range_pct <= 0:
+            return False
+
+        body_is_shallow = (
+            trigger_body_pct
+            <= average_range_pct * context.settings.signals_countertrend_trigger_body_to_range_ratio
+        )
+        regime_is_strong = regime_gap_pct >= context.settings.signals_countertrend_trigger_min_regime_gap_pct
+        rsi_buffer = context.settings.signals_countertrend_trigger_rsi_buffer
+
+        if side == "long":
+            return (
+                body_is_shallow
+                and regime_is_strong
+                and trigger_hist > 0
+                and trigger_rsi >= context.settings.signals_rsi_long_min + rsi_buffer
+            )
+
+        return (
+            body_is_shallow
+            and regime_is_strong
+            and trigger_hist < 0
+            and trigger_rsi <= context.settings.signals_rsi_short_max - rsi_buffer
+        )
+
+    def _pullback_is_valid(
+        self,
+        *,
+        distance_to_ema: float,
+        distance_to_vwap: float,
+        regime_gap_pct: float,
+        context: StrategyContext,
+    ) -> bool:
+        base_tolerance = context.settings.signals_pullback_tolerance_pct
+        if distance_to_ema <= base_tolerance and distance_to_vwap <= base_tolerance:
+            return True
+
+        strong_regime = regime_gap_pct >= context.settings.signals_trend_pullback_strong_regime_gap_pct
+        relaxed_vwap_tolerance = base_tolerance + context.settings.signals_trend_pullback_vwap_slack_pct
+
+        return (
+            strong_regime
+            and distance_to_ema <= base_tolerance
+            and distance_to_vwap <= relaxed_vwap_tolerance
         )

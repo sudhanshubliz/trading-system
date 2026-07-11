@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.sudhanshu.trading-system.evening-ops-check</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd /Users/sudhanshu_thakur/Documents/workspace/binance/trading-system &amp;&amp; /Users/sudhanshu_thakur/Documents/workspace/binance/trading-system/.venv/bin/python3 scripts/daily_ops_check.py --base-url http://127.0.0.1:8001/api/v1 --symbols BTCUSDT ETHUSDT --ensure-shadow-running --fail-on-warning --json-out daily-checks/$(date +%F)-evening.json &gt;&gt; logs/evening_ops_check.log 2&gt;&amp;1</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/sudhanshu_thakur/Documents/workspace/binance/trading-system</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>21</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/sudhanshu_thakur/Documents/workspace/binance/trading-system/logs/evening_ops_check.launchd.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/sudhanshu_thakur/Documents/workspace/binance/trading-system/logs/evening_ops_check.launchd.err.log</string>
+</dict>
+</plist>

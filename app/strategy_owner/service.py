@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 from collections import Counter
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
+from typing import Callable
 
 from app.config.settings import Settings, get_settings
 from app.risk.types import RiskValidationInput
@@ -47,8 +48,10 @@ class StrategyOwnerService:
         risk_service: object | None = None,
         repo: object | None = None,
         events_repo: object | None = None,
+        time_provider: Callable[[], datetime] | None = None,
     ) -> None:
         self.settings = settings or get_settings()
+        self.time_provider = time_provider or utc_now
         self.signal_service = signal_service
         self.alpha_fusion_service = alpha_fusion_service
         self.arbitrage_service = arbitrage_service
@@ -68,7 +71,10 @@ class StrategyOwnerService:
         self.risk_service = risk_service
         self.repo = repo
         self.events_repo = events_repo
-        self.registry = StrategyOwnerRegistry(settings=self.settings)
+        self.registry = StrategyOwnerRegistry(
+            settings=self.settings,
+            time_provider=self.time_provider,
+        )
         self.evaluator = StrategyCandidateEvaluator(
             settings=self.settings,
             provider_health_service=provider_health_service,
@@ -137,7 +143,7 @@ class StrategyOwnerService:
                 risk_assessment_id=risk_assessment_id,
                 metrics_snapshot=self.registry.to_metrics_snapshot(candidate),
                 explanation=explanation,
-                timestamp=utc_now(),
+                timestamp=self.time_provider(),
                 metadata=dict(candidate.metadata),
             )
             decisions.append(decision)
@@ -161,12 +167,13 @@ class StrategyOwnerService:
         limit: int = 100,
     ) -> list[StrategyDecisionCandidate]:
         if self.repo is not None:
-            return self.repo.list_candidates(
+            items = self.repo.list_candidates(
                 strategy_family=strategy_family,
                 source_name=source_name,
                 symbol_or_market=symbol_or_market,
                 limit=limit,
             )
+            return [self._sanitize_candidate_for_read(item) for item in items]
         items = list(self._candidates)
         if strategy_family is not None:
             items = [item for item in items if item.strategy_family == strategy_family]
@@ -174,7 +181,7 @@ class StrategyOwnerService:
             items = [item for item in items if item.source_name == source_name]
         if symbol_or_market is not None:
             items = [item for item in items if item.symbol_or_market == symbol_or_market]
-        return items[:limit]
+        return [self._sanitize_candidate_for_read(item) for item in items[:limit]]
 
     def list_decisions(
         self,
@@ -211,7 +218,7 @@ class StrategyOwnerService:
             forwarded_to_risk_count=len([item for item in decisions if item.forwarded_to_risk]),
             active_strategy_families=sorted({item.strategy_family for item in candidates}),
             top_rejection_reasons=[reason for reason, _ in rejection_counter.most_common(5)],
-            generated_at=utc_now(),
+            generated_at=self.time_provider(),
         )
 
     async def _collect_candidates(
@@ -307,6 +314,31 @@ class StrategyOwnerService:
         if self.repo is not None:
             self.repo.upsert_candidate(candidate)
 
+    def _sanitize_candidate_for_read(
+        self,
+        candidate: StrategyDecisionCandidate,
+    ) -> StrategyDecisionCandidate:
+        read_vetoes: list[str] = []
+        age_seconds = max((self.time_provider() - candidate.timestamp).total_seconds(), 0.0)
+        if age_seconds > self.settings.strategy_owner_max_candidate_age_seconds:
+            read_vetoes.append("candidate_stale")
+        if candidate.metadata.get("basket_required") and not candidate.metadata.get(
+            "atomic_basket_execution_supported",
+            False,
+        ):
+            read_vetoes.append("atomic_basket_execution_unsupported")
+        if candidate.metadata.get("advisory_only"):
+            read_vetoes.append("advisory_only")
+        if not read_vetoes:
+            return candidate
+        return replace(
+            candidate,
+            tradable=False,
+            requires_risk_review=False,
+            notes=[*candidate.notes, *[f"read_veto:{reason}" for reason in read_vetoes]],
+            metadata={**candidate.metadata, "read_veto_factors": read_vetoes},
+        )
+
     def _store_decision(self, decision: StrategyOwnerDecision) -> None:
         self._decisions.insert(0, decision)
         self._decisions = self._decisions[: self.settings.strategy_owner_store_limit]
@@ -321,9 +353,10 @@ class StrategyOwnerService:
             )
 
     def _to_risk_input(self, candidate: StrategyDecisionCandidate) -> RiskValidationInput:
+        execution_symbol = str(candidate.metadata.get("execution_symbol") or candidate.symbol_or_market)
         return RiskValidationInput(
             signal_id=candidate.candidate_id,
-            symbol=candidate.symbol_or_market.upper(),
+            symbol=execution_symbol.upper(),
             side=candidate.direction,
             strategy_name=candidate.strategy_name or candidate.strategy_family,
             confidence_score=int(round(candidate.confidence * 100.0)),
@@ -344,7 +377,7 @@ class StrategyOwnerService:
         symbol_or_market = getattr(latest, "symbol_or_market", "UNKNOWN")
         direction = getattr(latest, "direction_bias", "neutral")
         confidence = float(getattr(latest, "scenario_confidence", 0.5))
-        timestamp = getattr(latest, "simulation_timestamp", utc_now())
+        timestamp = getattr(latest, "simulation_timestamp", self.time_provider())
         explanation = getattr(latest, "explanation", "")
         metadata = getattr(latest, "metadata", {})
         return AlphaSourceReading(

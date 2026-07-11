@@ -53,6 +53,7 @@ class ProviderRuntimeState:
     last_failure_at: datetime | None = None
     error_count: int = 0
     last_latency_ms: float | None = None
+    last_error_type: str | None = None
 
     @property
     def has_successful_fetch(self) -> bool:
@@ -61,10 +62,12 @@ class ProviderRuntimeState:
     def record_success(self, *, started_at: datetime) -> None:
         self.last_success_at = utc_now()
         self.last_latency_ms = max((utc_now() - started_at).total_seconds() * 1000.0, 0.0)
+        self.last_error_type = None
 
-    def record_failure(self) -> None:
+    def record_failure(self, error: BaseException | None = None) -> None:
         self.error_count += 1
         self.last_failure_at = utc_now()
+        self.last_error_type = type(error).__name__ if error is not None else "unknown_error"
 
     def build_health(
         self,
@@ -94,6 +97,7 @@ class ProviderRuntimeState:
             "error_count": self.error_count,
             "last_success_at": self.last_success_at,
             "last_failure_at": self.last_failure_at,
+            "notes": [self.last_error_type] if self.last_error_type else [],
             "metadata": metadata or {},
         }
 

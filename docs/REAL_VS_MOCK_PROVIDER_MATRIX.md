@@ -7,12 +7,12 @@ This matrix classifies the current provider posture in the repo. The goal is ope
 | Binance spot market data | real | REST + WebSocket implementation exists and is actively used. Safe for paper and research. |
 | Binance futures market data | real | Futures REST integration exists for candles, funding, and mark-price context. Safe for paper and research. |
 | Binance execution | unsafe for live | Live adapter scaffolding exists, but guarded-live controls must remain explicit. Safe path is paper/shadow first. |
-| Polymarket market data | auto_fallback | Real and mock providers exist. Real normalization is implemented, but operator should expect env-driven fallback when unavailable. |
-| Polymarket CLOB execution | missing | Research/opportunity support exists. Direct production execution is not implemented and should not be assumed safe. |
+| Polymarket market data | real + auto_fallback | Public Gamma metadata, CLOB REST books, Data API trades, and bounded CLOB market WebSocket support are implemented. Availability remains jurisdiction/network dependent; mock fallback is local/dev only and cannot produce a tradable latency candidate. |
+| Polymarket CLOB execution | missing | Outcome-book paper simulation exists. Wallet signing, authenticated order placement, short/mint baskets, and atomic multi-leg execution are intentionally absent. |
 | Wallet intelligence | auto_fallback | Mock provider is reliable locally. Real provider path depends on external dataset/API quality and should be treated as advisory. |
 | Event/news feed | auto_fallback | Mock feed works locally. Real feed adapters exist, but concrete production quality depends on feed configuration. |
 | OpenClaw | mock | Dry-run/orchestration bridge exists. It is not the source of trading truth and should stay operator-facing. |
-| MiroFish | mock | Advisory simulation adapter only. Optional and non-binding by design. |
+| MiroFish | mock + external ingest | Mock scenarios and validated external scenario ingestion exist. All readings are confidence-capped, advisory-only, and non-tradable by design. |
 | Telegram | safe for paper only | Runtime/controller utilities exist, but this is not a hardened external notification provider. Do not treat as live-trading authority. |
 
 ## Operational Classification Summary

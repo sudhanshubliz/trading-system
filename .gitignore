@@ -7,3 +7,6 @@ __pycache__/
 *.egg-info/
 .m8_dump.txt
 .DS_Store
+/artifacts/
+/daily-checks/
+/logs/

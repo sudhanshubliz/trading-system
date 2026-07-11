@@ -25,7 +25,9 @@ The platform is organized as a research-to-execution stack:
 - `app/execution_quality`
   - Phase 2 execution-quality records and scoring for paper, shadow, replay, and guarded live paths.
 - `app/polymarket`
-  - Phase 3 Polymarket provider abstraction, market snapshots, linked-market validation, and mispricing opportunity generation.
+  - Real public Gamma/CLOB/Data adapters, bounded CLOB WebSocket books, market snapshots, linked-market validation, and cost-aware mispricing research.
+- `app/strategies/latency_arbitrage`
+  - Paper-only BTC/ETH prediction-market lag research using sampled Binance reference prices and executable Polymarket outcome books.
 - `app/wallet_intel`
   - Phase 3 wallet profile scoring, observations, leaderboards, and wallet-driven signals through mock or real-provider scaffolds.
 - `app/event_signals`
@@ -61,6 +63,115 @@ pip install --upgrade pip
 pip install -e .
 cp .env.example .env
 uvicorn app.main:app --reload
+```
+
+For a collision-safe local backend startup on the standard operator port:
+
+```bash
+cd /Users/sudhanshu_thakur/Documents/workspace/binance/trading-system
+./scripts/start_backend_service.sh
+```
+
+That script only starts the backend if port `3030` is free or already owned by this repo. If another project is listening on the port, it fails loudly instead of silently serving the wrong app.
+
+Stop the backend safely with:
+
+```bash
+cd /Users/sudhanshu_thakur/Documents/workspace/binance/trading-system
+./scripts/stop_backend_service.sh
+```
+
+Install a repo-specific backend `launchd` job on macOS:
+
+```bash
+cd /Users/sudhanshu_thakur/Documents/workspace/binance/trading-system
+./scripts/install_backend_launchd.sh
+```
+
+Remove it with:
+
+```bash
+cd /Users/sudhanshu_thakur/Documents/workspace/binance/trading-system
+./scripts/uninstall_backend_launchd.sh
+```
+
+Inspect or restart it with:
+
+```bash
+launchctl print gui/$(id -u)/com.sudhanshu.trading-system.backend
+launchctl kickstart -k gui/$(id -u)/com.sudhanshu.trading-system.backend
+```
+
+## Daily Operator Check
+
+Run the daily operator checklist against the local backend:
+
+```bash
+cd /Users/sudhanshu_thakur/Documents/workspace/binance/trading-system
+source .venv/bin/activate
+python3 scripts/daily_ops_check.py \
+  --base-url http://127.0.0.1:3030/api/v1 \
+  --symbols BTCUSDT ETHUSDT \
+  --ensure-shadow-running \
+  --fail-on-warning \
+  --json-out daily-checks/$(date +%F).json
+```
+
+What it checks:
+
+- `/health`
+- `/health/readyz`
+- `/market-data/health`
+- `/risk/summary`
+- `/risk/locks/current`
+- `/shadow/status`
+- `/signals/evaluate`
+- `/risk/evaluate-signals`
+- `/signals`
+- `/approvals/pending`
+- `/trades`
+- `/execution/quality`
+- `/provider-health/summary`
+- `/system/intelligence/summary`
+
+Example `cron` entry for a 9:15 AM daily run:
+
+```bash
+15 9 * * * cd /Users/sudhanshu_thakur/Documents/workspace/binance/trading-system && /bin/zsh -lc 'source .venv/bin/activate && python3 scripts/daily_ops_check.py --base-url http://127.0.0.1:3030/api/v1 --symbols BTCUSDT ETHUSDT --ensure-shadow-running --fail-on-warning --json-out daily-checks/$(date +\\%F).json >> logs/daily_ops_check.log 2>&1'
+```
+
+If you prefer `launchd` on macOS, the repo includes ready-made schedules:
+
+- `com.sudhanshu.trading-system.daily-ops-check`
+  - every day at `09:15`
+  - writes `daily-checks/YYYY-MM-DD.json`
+- `com.sudhanshu.trading-system.evening-ops-check`
+  - every day at `21:15`
+  - writes `daily-checks/YYYY-MM-DD-evening.json`
+- `com.sudhanshu.trading-system.weekend-deep-check`
+  - Saturday and Sunday at `10:30`
+  - writes `daily-checks/YYYY-MM-DD-weekend-deep.json`
+
+Install them with:
+
+```bash
+cd /Users/sudhanshu_thakur/Documents/workspace/binance/trading-system
+./scripts/install_daily_ops_launchd.sh
+```
+
+Remove them with:
+
+```bash
+cd /Users/sudhanshu_thakur/Documents/workspace/binance/trading-system
+./scripts/uninstall_daily_ops_launchd.sh
+```
+
+Run one immediately with:
+
+```bash
+launchctl start com.sudhanshu.trading-system.daily-ops-check
+launchctl start com.sudhanshu.trading-system.evening-ops-check
+launchctl start com.sudhanshu.trading-system.weekend-deep-check
 ```
 
 ## Phase 1, Phase 2, And Phase 3 Additions
@@ -135,7 +246,7 @@ Phase 3 expands the platform into a multi-source intelligence layer with:
 - OpenClaw bridge
   - dry-run-safe alerts, approval payloads, operator notes, and incidents
 - MiroFish adapter
-  - advisory scenario summaries and fusion-compatible scenario signals
+  - validated external advisory scenario ingestion, confidence caps, and fusion-compatible non-tradable readings
 
 Production hardening beyond the Phase 3 scaffold now adds:
 
@@ -150,6 +261,11 @@ Production hardening beyond the Phase 3 scaffold now adds:
   - bucketed correlation throttles for crypto directional, event-market, and wallet-follow risk
   - incident lifecycle support for create, acknowledge, resolve, notes, and structured alert history
   - system summaries that surface unhealthy providers, backfill degradation, promotion blockers, and allocation throttles
+- prediction-market execution research hardening
+  - official public Gamma/CLOB/Data normalization and bounded market WebSocket consumption
+  - depth-walked fills, probability-dependent fees, strict freshness, and source provenance
+  - shared Strategy Owner -> Risk -> Approval -> paper/shadow path with a hard live-mode rejection
+  - unsupported short/mint and atomic linked baskets remain explicitly research-only
 
 ## Strategy Families
 
@@ -402,18 +518,38 @@ Provider integrations are built with safe local defaults:
 - `EVENT_PROVIDER_MODE=mock`
 - `MIROFISH_PROVIDER=mock`
 
+Latency-arbitrage research also defaults off with `LATENCY_ARB_ENABLED=false` and remains hard-labeled `paper_only=true`. Real Polymarket mode is read-only; this repo does not request wallet private keys or derive live CLOB trading credentials.
+
 Use `auto_fallback` when you want the real provider first but still need a safe local/dev escape hatch. Legacy aliases like `POLYMARKET_PROVIDER`, `WALLET_PROVIDER`, and `EVENT_PROVIDER` are still accepted for backward compatibility, but `*_PROVIDER_MODE` is now the preferred config surface.
 
 ## Replay Fidelity
 
 Replay remains honest about fidelity:
 
+- Closed candles become visible to replay strategies only at their interval close boundary; their completed OHLC values are never exposed at candle open.
 - Basis/funding replay uses candle-derived spot-vs-perp approximations when native historical funding snapshots are not available.
 - Microstructure replay builds deterministic synthetic order-book and trade-flow views from candle paths and volume.
 - Execution-quality replay scores simulated fills against replay snapshots rather than exchange-confirmed venue latency.
 - Prediction-market replay is best-effort and snapshot-based when stored Polymarket or event data is available.
 - Wallet and event replay are driven by stored observations/signals rather than claims of perfect historical discovery timing.
 - Fidelity metadata is persisted per replay run so the UI and reviews can see exactly what external data was and was not available.
+
+### Cost-Aware Walk-Forward Gate
+
+Run the fixed-strategy, three-fold Binance evidence check with at least 90 days of official public candles:
+
+```bash
+cd /Users/sudhanshu_thakur/Documents/workspace/binance/trading-system
+source .venv/bin/activate
+python scripts/run_binance_walk_forward.py \
+  --days 90 \
+  --folds 3 \
+  --initial-balance 5000
+```
+
+Paper, shadow, and replay P&L natively deduct entry and exit fees. Simulated adverse entry/exit slippage is embedded in fill prices and reported separately for attribution, so it is not deducted twice. The shared risk path also requires modeled net edge to clear round-trip costs and enforces a per-strategy/symbol cooldown.
+
+The report is a safety gate, not a profit forecast. Live promotion remains blocked unless the minimum duration and sample requirements, positive after-cost expectancy, profit factor, drawdown, fold consistency, and subsequent shadow evidence all pass.
 
 ## Backfill Jobs
 
@@ -495,6 +631,7 @@ pytest tests/test_remaining_hardening.py tests/test_alembic_migration_smoke.py
 - [Execution Quality](docs/execution_quality.md)
 - [Polymarket Engine](docs/polymarket_engine.md)
 - [Polymarket Real Provider](docs/polymarket_provider_real.md)
+- [Polymarket Latency Research](docs/polymarket_latency_research.md)
 - [Wallet Intelligence](docs/wallet_intelligence.md)
 - [Wallet Real Provider](docs/wallet_provider_real.md)
 - [Event Signals](docs/event_signals.md)

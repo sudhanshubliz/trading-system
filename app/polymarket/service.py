@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import logging
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 from app.alpha_fusion.types import AlphaSourceReading
 from app.config.settings import Settings, get_settings
+from app.execution.costs import calculate_prediction_market_fee
 from app.persistence.repositories.alpha_sources_repo import AlphaSourcesRepository
 from app.persistence.repositories.events_repo import EventsRepository
 from app.persistence.repositories.polymarket_repo import PolymarketRepository
@@ -16,11 +18,19 @@ from app.polymarket.providers import (
     RealPolymarketProvider as BaseRealPolymarketProvider,
     build_polymarket_provider,
 )
-from app.polymarket.types import LinkedMarketValidation, PolymarketMarket, PolymarketOpportunity, PolymarketOrderBook
+from app.polymarket.types import (
+    LinkedMarketValidation,
+    PolymarketBookLevel,
+    PolymarketMarket,
+    PolymarketOpportunity,
+    PolymarketOrderBook,
+)
 from app.probability.bayesian_model import update_probability
 from app.probability.types import ProbabilityEvidence
 from app.provider_health.service import ProviderHealthService
 from app.provider_health.types import ProviderIngestRun
+
+logger = logging.getLogger(__name__)
 
 
 def utc_now() -> datetime:
@@ -68,6 +78,20 @@ class PolymarketService:
         self._markets: OrderedDict[str, PolymarketMarket] = OrderedDict()
         self._opportunities: OrderedDict[str, PolymarketOpportunity] = OrderedDict()
         self._validations: OrderedDict[str, LinkedMarketValidation] = OrderedDict()
+        self._execution_targets: dict[str, tuple[str, str]] = {}
+
+    async def start(self) -> None:
+        starter = getattr(self.provider, "start", None)
+        if starter is not None:
+            try:
+                await starter()
+            except Exception:
+                logger.exception("polymarket provider start failed; continuing with provider degraded")
+
+    async def stop(self) -> None:
+        stopper = getattr(self.provider, "stop", None)
+        if stopper is not None:
+            await stopper()
 
     async def refresh(self) -> None:
         requested_at = utc_now()
@@ -83,7 +107,7 @@ class PolymarketService:
         except Exception as exc:
             status = "failed"
             notes.append(str(exc))
-            raise
+            logger.warning("polymarket refresh failed; retaining persisted/cache data error=%s", exc)
         finally:
             if self.provider_health_service is not None:
                 await self.provider_health_service.evaluate_provider("polymarket", self.provider)
@@ -124,7 +148,10 @@ class PolymarketService:
         return None
 
     async def get_orderbook(self, market_id: str) -> PolymarketOrderBook | None:
-        return await self.provider.get_orderbook(market_id)
+        orderbook = await self.provider.get_orderbook(market_id)
+        if orderbook is not None and self.repo is not None:
+            self.repo.upsert_snapshot(orderbook)
+        return orderbook
 
     async def evaluate_opportunities(self) -> list[PolymarketOpportunity]:
         markets = await self.list_markets()
@@ -172,7 +199,7 @@ class PolymarketService:
                         "yes_plus_no": item.yes_plus_no,
                         "tradable": item.tradable,
                     },
-                    metadata=item.metadata,
+                    metadata={**item.metadata, "source_tradable": item.tradable},
                     timestamp=item.timestamp,
                 )
             )
@@ -181,6 +208,25 @@ class PolymarketService:
     async def get_provider_health(self) -> dict[str, object]:
         return await self.provider.health_check()
 
+    def register_execution_target(self, market_id: str, outcome: str) -> str:
+        normalized_outcome = outcome.upper()
+        digest = hashlib.sha1(f"{market_id}|{normalized_outcome}".encode("utf-8")).hexdigest()
+        symbol = f"PM_{digest[:16]}_{normalized_outcome[0]}"
+        self._execution_targets[symbol] = (market_id, normalized_outcome)
+        return symbol
+
+    def resolve_execution_symbol(self, symbol: str):
+        target = self._execution_targets.get(symbol.upper())
+        if target is None:
+            return None
+        from app.polymarket.execution_market_data import PolymarketExecutionTarget
+
+        return PolymarketExecutionTarget(
+            execution_symbol=symbol.upper(),
+            market_id=target[0],
+            outcome=target[1],
+        )
+
     async def _build_market_opportunity(self, market: PolymarketMarket) -> PolymarketOpportunity | None:
         orderbook = await self.provider.get_orderbook(market.market_id)
         prices = await self.provider.get_market_prices(market.market_id)
@@ -188,19 +234,53 @@ class PolymarketService:
         no_price = prices.get("no_price", market.no_price)
         yes_plus_no = yes_price + no_price if yes_price is not None and no_price is not None else None
         deviation = (yes_plus_no - 1.0) if yes_plus_no is not None else None
-        stale_market = (utc_now() - market.last_updated_at).total_seconds() > self.settings.polymarket_max_data_age_seconds
+        book_timestamp = orderbook.captured_at if orderbook is not None else market.last_updated_at
+        stale_market = (
+            (utc_now() - market.last_updated_at).total_seconds() > self.settings.polymarket_max_data_age_seconds
+            or (utc_now() - book_timestamp).total_seconds() > self.settings.polymarket_max_data_age_seconds
+        )
         spread = orderbook.spread_bps if orderbook is not None else None
-        depth = orderbook.depth_usd if orderbook is not None else 0.0
+        depth = _minimum_ask_depth(orderbook)
         opportunity_type = "cross-market-consistency-monitor"
         direction = "neutral"
         if deviation is not None and abs(deviation) >= 0.03:
             opportunity_type = "yes_no_sum_dislocation"
-            direction = "short_yes_long_no" if deviation > 0 else "long_yes_short_no"
+            direction = "monitor_short_basket" if deviation > 0 else "buy_yes_and_no"
         elif spread is not None and spread >= 220:
             opportunity_type = "thin_book_price_gap"
-        gross_edge = abs(deviation or 0.0) * 10000 * 0.6 + max((220 - (spread or 220)) / 10, 0.0)
-        fee_estimate = 8.0
-        slippage_estimate = max(2.0, 9000.0 / max(depth, 1.0))
+
+        executable_sum = None
+        fill_ratio = 0.0
+        gross_edge = 0.0
+        fee_estimate = 0.0
+        slippage_estimate = 0.0
+        buy_basket_supported = False
+        if orderbook is not None and orderbook.yes_ask is not None and orderbook.no_ask is not None:
+            requested_shares = self.settings.latency_arb_paper_order_notional_usd / max(
+                orderbook.yes_ask + orderbook.no_ask,
+                1e-9,
+            )
+            yes_fill = _walk_asks_for_shares(orderbook.yes_asks, requested_shares)
+            no_fill = _walk_asks_for_shares(orderbook.no_asks, requested_shares)
+            fill_ratio = min(yes_fill[1], no_fill[1])
+            if yes_fill[0] is not None and no_fill[0] is not None:
+                executable_sum = yes_fill[0] + no_fill[0]
+                gross_edge = max(1.0 - executable_sum, 0.0) * 10000.0
+                entry_cost = executable_sum * requested_shares * fill_ratio
+                fees = calculate_prediction_market_fee(
+                    shares=requested_shares * fill_ratio,
+                    price=yes_fill[0],
+                    fee_rate=market.fee_rate,
+                ) + calculate_prediction_market_fee(
+                    shares=requested_shares * fill_ratio,
+                    price=no_fill[0],
+                    fee_rate=market.fee_rate,
+                )
+                fee_estimate = fees / max(entry_cost, 1e-9) * 10000.0
+                top_sum = orderbook.yes_ask + orderbook.no_ask
+                slippage_estimate = max(executable_sum - top_sum, 0.0) / max(top_sum, 1e-9) * 10000.0
+                slippage_estimate += self.settings.latency_arb_execution_buffer_bps
+                buy_basket_supported = executable_sum < 1.0
         net_edge = gross_edge - fee_estimate - slippage_estimate
         probability_update = update_probability(
             prior=max(min(yes_price or 0.5, 0.99), 0.01),
@@ -222,6 +302,8 @@ class PolymarketService:
         confidence = min(1.0, 0.35 + abs(deviation or 0.0) * 4.0 + max(depth / 50000.0, 0.0))
         tradable = (
             not stale_market
+            and buy_basket_supported
+            and fill_ratio >= 0.999
             and depth >= self.settings.polymarket_min_depth_usd
             and net_edge >= self.settings.polymarket_min_net_edge_bps
         )
@@ -249,12 +331,19 @@ class PolymarketService:
             expected_holding_period="hours_to_days",
             explanation=[
                 f"yes+no={round(yes_plus_no, 4) if yes_plus_no is not None else None}",
+                f"executable_yes+no={round(executable_sum, 4) if executable_sum is not None else None}",
                 f"spread={spread}, depth={depth}",
                 f"tradable={tradable}",
             ],
             metadata={
                 "category": market.category,
                 "event_slug": market.event_slug,
+                "market_source": market.source,
+                "book_source": orderbook.source if orderbook is not None else None,
+                "executable_yes_plus_no": executable_sum,
+                "fill_ratio": fill_ratio,
+                "basket_execution_supported": buy_basket_supported,
+                "above_one_requires_short_or_mint_support": bool(executable_sum is not None and executable_sum > 1.0),
                 "probability_update": {
                     "posterior": probability_update.posterior,
                     "effective_confidence": probability_update.effective_confidence,
@@ -331,13 +420,15 @@ class PolymarketService:
                     slippage_estimate=round(slippage_estimate, 6),
                     net_edge_estimate=round(net_edge, 6),
                     confidence=round(min(1.0, 0.4 + deviation * 2.5 + min(depth_min / 20000.0, 0.2)), 6),
-                    tradable=stale_count == 0 and depth_min >= self.settings.polymarket_min_depth_usd and net_edge >= self.settings.polymarket_min_net_edge_bps,
+                    tradable=False,
                     recommended_direction="basket_yes" if (yes_sum - 1.0) < 0 else "basket_no",
                     expected_holding_period="event_window",
                     explanation=validation.explanation,
                     metadata={
                         "related_markets": validation.related_markets,
                         "basket_required": True,
+                        "atomic_basket_execution_supported": False,
+                        "research_only_reason": "linked basket execution is not implemented",
                         "settlement_risk_bps": round(5.0 * len(grouped), 6),
                     },
                 )
@@ -365,7 +456,7 @@ class PolymarketService:
                     expected_holding_period=opportunity.expected_holding_period,
                     strategy_family="polymarket_mispricing",
                     raw_signal={"opportunity_type": opportunity.opportunity_type, "tradable": opportunity.tradable},
-                    metadata=opportunity.metadata,
+                    metadata={**opportunity.metadata, "source_tradable": opportunity.tradable},
                     timestamp=opportunity.timestamp,
                 )
             )
@@ -379,3 +470,32 @@ class PolymarketService:
     def _build_id(self, entity: str, signal_family: str, timestamp: datetime) -> str:
         digest = hashlib.sha1(f"{entity}|{signal_family}|{timestamp.isoformat()}".encode("utf-8")).hexdigest()
         return f"pm_{digest[:12]}"
+
+
+def _minimum_ask_depth(orderbook: PolymarketOrderBook | None) -> float:
+    if orderbook is None:
+        return 0.0
+    yes_depth = sum(level.price * level.size for level in orderbook.yes_asks)
+    no_depth = sum(level.price * level.size for level in orderbook.no_asks)
+    return min(yes_depth, no_depth)
+
+
+def _walk_asks_for_shares(
+    asks: list[PolymarketBookLevel],
+    requested_shares: float,
+) -> tuple[float | None, float]:
+    if requested_shares <= 0:
+        return None, 0.0
+    remaining = requested_shares
+    filled = 0.0
+    cost = 0.0
+    for level in sorted(asks, key=lambda item: item.price):
+        quantity = min(max(level.size, 0.0), remaining)
+        filled += quantity
+        cost += quantity * level.price
+        remaining -= quantity
+        if remaining <= 1e-9:
+            break
+    if filled <= 0:
+        return None, 0.0
+    return cost / filled, min(filled / requested_shares, 1.0)

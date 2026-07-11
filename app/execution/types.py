@@ -45,12 +45,17 @@ class Trade:
     updated_at: datetime
     closed_at: datetime | None = None
     realized_pnl: float = 0.0
+    gross_realized_pnl: float = 0.0
+    fees_paid: float = 0.0
+    slippage_cost: float = 0.0
     client_order_id: str | None = None
     exchange_order_id: str | None = None
     exchange_status: str | None = None
     reconciliation_status: str | None = None
     last_reconciled_at: datetime | None = None
     failure_reason: str | None = None
+    fee_model: str = "fixed_bps"
+    fee_rate: float = 0.0
 
 
 @dataclass(slots=True)
@@ -75,12 +80,17 @@ class Position:
     updated_at: datetime
     closed_at: datetime | None = None
     realized_pnl: float = 0.0
+    gross_realized_pnl: float = 0.0
+    fees_paid: float = 0.0
+    slippage_cost: float = 0.0
     unrealized_pnl: float = 0.0
     target_1_hit: bool = False
     close_reason: str | None = None
     execution_mode: str = "paper"
     reconciliation_status: str | None = None
     last_reconciled_at: datetime | None = None
+    fee_model: str = "fixed_bps"
+    fee_rate: float = 0.0
 
 
 @dataclass(slots=True)
@@ -100,6 +110,9 @@ class PnlSummary:
     closed_positions: int
     total_trades: int
     timestamp: datetime
+    gross_realized_pnl_total: float = 0.0
+    fees_paid_total: float = 0.0
+    slippage_cost_total: float = 0.0
 
 
 @dataclass(slots=True)

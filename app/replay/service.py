@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import asdict
+from datetime import datetime
 
 from app.config.settings import Settings, get_settings
 from app.persistence.repositories.replay_repo import ReplayRepository
 from app.replay.engine import ReplayEngine
 from app.replay.loader import load_replay_candles
-from app.replay.types import ReplayRun, ReplayRunConfig
+from app.replay.types import ReplayRun, ReplayRunConfig, WalkForwardReplayReport
+from app.replay.walk_forward import build_walk_forward_report
 
 
 class ReplayService:
@@ -67,6 +70,42 @@ class ReplayService:
         if self.replay_repo is not None:
             self.replay_repo.upsert_replay_run(run)
         return run
+
+    async def run_walk_forward(
+        self,
+        *,
+        candles_source: str | dict | list,
+        futures_candles_source: dict | list | None = None,
+        symbols: list[str] | None = None,
+        initial_balance: float | None = None,
+        start_time: datetime,
+        end_time: datetime,
+        fold_count: int | None = None,
+        fidelity_mode: str | None = None,
+    ) -> tuple[ReplayRun, WalkForwardReplayReport]:
+        run = await self.run_replay(
+            candles_source=candles_source,
+            futures_candles_source=futures_candles_source,
+            symbols=symbols,
+            initial_balance=initial_balance,
+            start_time=start_time,
+            end_time=end_time,
+            fidelity_mode=fidelity_mode,
+        )
+        report = build_walk_forward_report(
+            run,
+            start_time=start_time,
+            end_time=end_time,
+            fold_count=fold_count or self.settings.replay_walk_forward_folds,
+            minimum_days=self.settings.replay_walk_forward_min_days,
+            minimum_trades=self.settings.optimization_min_trades,
+            minimum_profit_factor=self.settings.optimization_min_profit_factor,
+            maximum_drawdown_pct=self.settings.optimization_max_drawdown_pct,
+        )
+        run.phase2_artifacts["walk_forward"] = asdict(report)
+        if self.replay_repo is not None:
+            self.replay_repo.upsert_replay_run(run)
+        return run, report
 
     def list_runs(self) -> list[ReplayRun]:
         if not self._runs and self.replay_repo is not None:

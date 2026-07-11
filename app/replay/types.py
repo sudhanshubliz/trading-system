@@ -57,6 +57,9 @@ class ReplayTradeResult:
     realized_pnl: float
     exit_reason: str | None
     status: str
+    gross_realized_pnl: float = 0.0
+    fees_paid: float = 0.0
+    slippage_cost: float = 0.0
 
 
 @dataclass(slots=True)
@@ -73,6 +76,10 @@ class ReplayMetrics:
     unrealized_pnl_final: float
     ending_balance: float
     equity_curve: list[EquityPoint] = field(default_factory=list)
+    gross_realized_pnl_total: float = 0.0
+    fees_paid_total: float = 0.0
+    slippage_cost_total: float = 0.0
+    turnover_notional: float = 0.0
 
 
 @dataclass(slots=True)
@@ -90,3 +97,44 @@ class ReplayRun:
     fidelity_notes: list[str] = field(default_factory=list)
     fidelity_mode: str = "medium"
     fidelity_metadata: ReplayFidelityMetadata | None = None
+
+
+@dataclass(slots=True)
+class WalkForwardFoldMetrics:
+    fold_index: int
+    start_time: datetime
+    end_time: datetime
+    total_trades: int
+    net_pnl: float
+    expectancy: float
+    profit_factor: float
+    max_drawdown_pct: float
+    fees_paid: float
+    slippage_cost: float
+    turnover_notional: float
+    passed: bool
+    blockers: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class WalkForwardReplayReport:
+    run_id: str
+    start_time: datetime
+    end_time: datetime
+    evidence_days: float
+    fold_count: int
+    positive_fold_count: int
+    required_positive_folds: int
+    total_trades: int
+    net_pnl: float
+    expectancy: float
+    profit_factor: float
+    max_drawdown_pct: float
+    fees_paid: float
+    slippage_cost: float
+    turnover_notional: float
+    passed: bool
+    blockers: list[str] = field(default_factory=list)
+    folds: list[WalkForwardFoldMetrics] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    generated_at: datetime | None = None

@@ -11,7 +11,7 @@ from app.db.models import MarketSnapshot
 from app.db.session import SessionLocal
 from app.market_data.binance_rest import BinanceFuturesRestClient, BinanceRestClient, BinanceRestError
 from app.market_data.binance_ws import BinanceWebSocketClient
-from app.market_data.cache import CandleCache, FundingCache, OrderBookCache, TickerCache, TradePrintCache
+from app.market_data.cache import CandleCache, FundingCache, OrderBookCache, PriceHistoryCache, TickerCache, TradePrintCache
 from app.market_data.schemas import (
     extract_stream_payload,
     infer_event_type,
@@ -27,7 +27,7 @@ from app.market_data.schemas import (
     parse_trade_print,
     parse_ws_candle,
 )
-from app.market_data.types import Candle, FundingRatePoint, FundingSnapshot, MarketDataHealth, OrderBookSnapshot, SymbolHealth, TickerSnapshot, TradePrint
+from app.market_data.types import Candle, FundingRatePoint, FundingSnapshot, MarketDataHealth, OrderBookSnapshot, PricePoint, SymbolHealth, TickerSnapshot, TradePrint
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,7 @@ class MarketDataService:
         self.orderbook_cache = OrderBookCache()
         self.ticker_cache = TickerCache(self.supported_symbols)
         self.trade_cache = TradePrintCache(limit=self.settings.market_data_trade_cache_limit)
+        self.price_history_cache = PriceHistoryCache(limit=self.settings.market_data_price_history_limit)
         self.funding_cache = FundingCache(history_limit=self.settings.market_data_funding_cache_limit)
         self._lock = asyncio.Lock()
         self._tasks: list[asyncio.Task[None]] = []
@@ -218,6 +219,13 @@ class MarketDataService:
         async with self._lock:
             return self.trade_cache.get(symbol, limit=limit)
 
+    async def get_price_history(self, symbol: str, *, seconds: int = 300) -> list[PricePoint]:
+        if not self.supports_symbol(symbol):
+            return []
+        since = utc_now() - timedelta(seconds=max(seconds, 1))
+        async with self._lock:
+            return self.price_history_cache.get(symbol, since=since)
+
     async def get_funding_snapshot(self, symbol: str) -> FundingSnapshot | None:
         normalized = normalize_symbol(symbol)
         async with self._lock:
@@ -274,14 +282,17 @@ class MarketDataService:
             self._set_fallback_active_locked(False)
 
             if event_type in {"24hrMiniTicker", "24hrTicker"}:
+                last_price = parse_float(payload.get("c"))
                 self.ticker_cache.upsert_ticker(
                     symbol,
-                    last_price=parse_float(payload.get("c")),
+                    last_price=last_price,
                     volume_24h=parse_float(payload.get("v")),
                     updated_at=now,
                     status_field="ws_status",
                     status_value="ok",
                 )
+                if last_price is not None and last_price > 0:
+                    self.price_history_cache.upsert(PricePoint(symbol=symbol, price=last_price, timestamp=now))
                 snapshot = self.ticker_cache.get(symbol)
             elif event_type == "depthUpdate":
                 order_book = parse_order_book_top(symbol, payload)
@@ -303,6 +314,9 @@ class MarketDataService:
             elif event_type == "aggTrade":
                 trade_print = parse_trade_print(payload)
                 self.trade_cache.upsert(trade_print)
+                self.price_history_cache.upsert(
+                    PricePoint(symbol=symbol, price=trade_print.price, timestamp=trade_print.trade_time)
+                )
             elif event_type == "kline":
                 timeframe, candle = parse_ws_candle(payload)
                 if timeframe in self.supported_timeframes:
@@ -376,6 +390,8 @@ class MarketDataService:
                 status_field="rest_status",
                 status_value="ok",
             )
+            if last_price is not None and last_price > 0:
+                self.price_history_cache.upsert(PricePoint(symbol=symbol, price=last_price, timestamp=now))
             self.orderbook_cache.upsert(order_book)
             self.ticker_cache.upsert_orderbook(
                 symbol,

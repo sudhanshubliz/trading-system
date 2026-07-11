@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.config.settings import get_settings
 from app.execution.service import ExecutionService
+from app.market_data.types import TickerSnapshot
 from app.persistence.db import get_persistence_session_factory, init_persistence_db
 from app.persistence.repositories.approvals_repo import ApprovalsRepository
 from app.persistence.repositories.events_repo import EventsRepository
@@ -14,8 +15,17 @@ from app.risk.types import RiskAssessment, RiskCheckResult
 
 
 class FakeMarketDataService:
-    async def get_snapshot(self, symbol: str) -> dict[str, float | None]:
-        return {"last_price": 101.0}
+    async def get_snapshot(self, symbol: str) -> TickerSnapshot:
+        now = datetime.now(timezone.utc)
+        return TickerSnapshot(
+            symbol=symbol.upper(),
+            last_price=101.0,
+            bid_price=100.99,
+            ask_price=101.01,
+            ticker_updated_at=now,
+            orderbook_updated_at=now,
+            snapshot_time=now,
+        )
 
     async def get_health(self) -> dict[str, str]:
         return {"status": "ok"}

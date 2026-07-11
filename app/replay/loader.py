@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.market_data.types import Candle
+from app.replay.timeframes import candle_close_time
 
 
 def load_replay_candles(source: str | dict[str, Any] | list[dict[str, Any]]) -> dict[str, dict[str, list[Candle]]]:
@@ -64,7 +65,7 @@ def slice_replay_candles(
                 candle
                 for candle in series
                 if (start_time is None or candle.open_time >= start_time)
-                and (end_time is None or candle.open_time <= end_time)
+                and (end_time is None or candle_close_time(candle.open_time, timeframe) <= end_time)
             ]
             if max_bars is not None and max_bars > 0:
                 filtered = filtered[-max_bars:]

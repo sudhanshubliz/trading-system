@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from bisect import bisect_right
 from collections import defaultdict
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,7 @@ from app.market_data.types import (
 )
 from app.replay.loader import slice_replay_candles
 from app.replay.metrics import build_replay_metrics
+from app.replay.timeframes import candle_close_time
 from app.replay.types import EquityPoint, ReplayFidelityMetadata, ReplayRun, ReplayRunConfig, ReplayTradeResult
 from app.risk.locks import RiskLockManager
 from app.risk.service import RiskService
@@ -60,10 +62,18 @@ class ReplayMarketDataService:
         candles: dict[str, dict[str, list[Candle]]],
         futures_candles: dict[str, dict[str, list[Candle]]],
         trigger_timeframe: str,
+        history_limit: int = 300,
     ) -> None:
         self._candles = candles
         self._futures_candles = futures_candles
         self._trigger_timeframe = trigger_timeframe.lower()
+        self._history_limit = max(history_limit, 1)
+        self._close_timestamps_by_series_id = {
+            id(series): [candle_close_time(candle.open_time, timeframe) for candle in series]
+            for store in (candles, futures_candles)
+            for timeframes in store.values()
+            for timeframe, series in timeframes.items()
+        }
         self._current_time: datetime | None = None
 
     def set_time(self, timestamp: datetime) -> None:
@@ -82,9 +92,11 @@ class ReplayMarketDataService:
         return series
 
     async def get_snapshot(self, symbol: str) -> TickerSnapshot:
-        candle = self._latest_candle(symbol, preferred=("5m", self._trigger_timeframe))
-        if candle is None:
+        latest = self._latest_candle_with_timeframe(symbol, preferred=("5m", self._trigger_timeframe))
+        if latest is None:
             return TickerSnapshot(symbol=symbol.upper(), last_price=None)
+        timeframe, candle = latest
+        updated_at = candle_close_time(candle.open_time, timeframe)
         spread_bps = self._spread_bps(candle)
         bid_price = candle.close * (1 - spread_bps / 20000)
         ask_price = candle.close * (1 + spread_bps / 20000)
@@ -103,15 +115,16 @@ class ReplayMarketDataService:
             ws_status="ok",
             rest_status="ok",
             fallback_active=False,
-            ticker_updated_at=candle.open_time,
-            orderbook_updated_at=candle.open_time,
+            ticker_updated_at=updated_at,
+            orderbook_updated_at=updated_at,
             snapshot_time=self._current_time,
         )
 
     async def get_order_book(self, symbol: str) -> OrderBookSnapshot | None:
-        candle = self._latest_candle(symbol, preferred=("5m", self._trigger_timeframe))
-        if candle is None:
+        latest = self._latest_candle_with_timeframe(symbol, preferred=("5m", self._trigger_timeframe))
+        if latest is None:
             return None
+        timeframe, candle = latest
         spread_bps = self._spread_bps(candle)
         bias = max(-0.25, min(0.25, (candle.close - candle.open) / max(candle.open, 1e-9) * 8.0))
         bid_multiplier = 1.0 + max(bias, 0.0)
@@ -142,7 +155,7 @@ class ReplayMarketDataService:
             symbol=symbol.upper(),
             bids=bids,
             asks=asks,
-            updated_at=self._current_time or candle.open_time,
+            updated_at=candle_close_time(candle.open_time, timeframe),
             update_count_1s=update_rate,
             update_count_5s=update_rate * 4,
         )
@@ -175,18 +188,28 @@ class ReplayMarketDataService:
         return trades[-limit:]
 
     async def get_funding_snapshot(self, symbol: str) -> FundingSnapshot | None:
-        spot_candle = self._latest_candle(symbol, preferred=("1h", self._trigger_timeframe))
-        futures_candle = self._latest_futures_candle(symbol, preferred=("1h", self._trigger_timeframe))
-        if spot_candle is None or futures_candle is None:
+        spot_latest = self._latest_candle_with_timeframe(symbol, preferred=("1h", self._trigger_timeframe))
+        futures_latest = self._latest_candle_with_timeframe(
+            symbol,
+            preferred=("1h", self._trigger_timeframe),
+            futures=True,
+        )
+        if spot_latest is None or futures_latest is None:
             return None
+        spot_timeframe, spot_candle = spot_latest
+        futures_timeframe, futures_candle = futures_latest
         rate = self._funding_rate_from_pair(spot_candle, futures_candle)
+        observed_at = min(
+            candle_close_time(spot_candle.open_time, spot_timeframe),
+            candle_close_time(futures_candle.open_time, futures_timeframe),
+        )
         return FundingSnapshot(
             symbol=symbol.upper(),
             mark_price=round(futures_candle.close, 6),
             index_price=round(spot_candle.close, 6),
             last_funding_rate=round(rate, 8),
             next_funding_time=(self._current_time or futures_candle.open_time) + timedelta(hours=8),
-            fetched_at=self._current_time or futures_candle.open_time,
+            fetched_at=observed_at,
         )
 
     async def get_funding_history(self, symbol: str, limit: int = 50) -> list[FundingRatePoint]:
@@ -199,7 +222,7 @@ class ReplayMarketDataService:
                 FundingRatePoint(
                     symbol=symbol.upper(),
                     funding_rate=round(self._funding_rate_from_pair(spot_candle, futures_candle), 8),
-                    funding_time=futures_candle.open_time,
+                    funding_time=candle_close_time(futures_candle.open_time, "1h"),
                     mark_price=round(futures_candle.close, 6),
                 )
             )
@@ -209,7 +232,13 @@ class ReplayMarketDataService:
         all_candles = self._all_series(symbol, timeframe, futures=futures)
         if self._current_time is None:
             return []
-        return [candle for candle in all_candles if candle.is_closed and candle.open_time <= self._current_time]
+        timestamps = self._close_timestamps_by_series_id.get(id(all_candles))
+        if timestamps is None:
+            timestamps = [candle_close_time(candle.open_time, timeframe) for candle in all_candles]
+            self._close_timestamps_by_series_id[id(all_candles)] = timestamps
+        visible_end = bisect_right(timestamps, self._current_time)
+        visible_start = max(0, visible_end - self._history_limit)
+        return [candle for candle in all_candles[visible_start:visible_end] if candle.is_closed]
 
     def _all_series(self, symbol: str, timeframe: str, *, futures: bool) -> list[Candle]:
         store = self._futures_candles if futures else self._candles
@@ -221,18 +250,25 @@ class ReplayMarketDataService:
         return []
 
     def _latest_candle(self, symbol: str, *, preferred: tuple[str, ...]) -> Candle | None:
+        latest = self._latest_candle_with_timeframe(symbol, preferred=preferred)
+        return latest[1] if latest is not None else None
+
+    def _latest_candle_with_timeframe(
+        self,
+        symbol: str,
+        *,
+        preferred: tuple[str, ...],
+        futures: bool = False,
+    ) -> tuple[str, Candle] | None:
         for timeframe in preferred:
-            series = self._visible_series(symbol, timeframe, futures=False)
+            series = self._visible_series(symbol, timeframe, futures=futures)
             if series:
-                return series[-1]
+                return timeframe, series[-1]
         return None
 
     def _latest_futures_candle(self, symbol: str, *, preferred: tuple[str, ...]) -> Candle | None:
-        for timeframe in preferred:
-            series = self._visible_series(symbol, timeframe, futures=True)
-            if series:
-                return series[-1]
-        return None
+        latest = self._latest_candle_with_timeframe(symbol, preferred=preferred, futures=True)
+        return latest[1] if latest is not None else None
 
     def _spread_bps(self, candle: Candle) -> float:
         range_pct = abs(candle.high - candle.low) / max(candle.close, 1e-9)
@@ -272,12 +308,13 @@ class ReplayEngine:
         )
 
         clock = ReplayClock()
+        local_settings = self.settings.model_copy(update=self._build_settings_overrides(config))
         replay_market_data = ReplayMarketDataService(
             replay_candles,
             replay_futures_candles,
             self.settings.signals_trigger_timeframe,
+            history_limit=local_settings.market_data_candle_limit,
         )
-        local_settings = self.settings.model_copy(update=self._build_settings_overrides(config))
         signal_service = SignalService(
             settings=local_settings,
             market_data_service=replay_market_data,
@@ -294,7 +331,7 @@ class ReplayEngine:
             time_provider=clock.now,
         )
         execution_quality_service = ExecutionQualityService(settings=local_settings)
-        risk_lock_manager = RiskLockManager()
+        risk_lock_manager = RiskLockManager(time_provider=clock.now)
         risk_service = RiskService(
             settings=local_settings,
             signal_service=signal_service,
@@ -321,6 +358,7 @@ class ReplayEngine:
             market_data_service=replay_market_data,
             execution_quality_service=execution_quality_service,
             risk_service=risk_service,
+            time_provider=clock.now,
         )
 
         events = self._build_events(replay_candles, config.symbols)
@@ -380,17 +418,21 @@ class ReplayEngine:
                     continue
                 candidate = candidate_by_id.get(decision.candidate_id)
                 if candidate is None:
+                    risk_service.release_assessment_reservation(decision.risk_assessment_id)
                     continue
                 key = (candidate.symbol_or_market, candidate.strategy_name or candidate.strategy_family)
                 if key in open_keys or key in traded_this_candle:
+                    risk_service.release_assessment_reservation(decision.risk_assessment_id)
                     continue
                 assessment = risk_service.get_assessment(decision.risk_assessment_id)
                 if assessment is None or assessment.final_decision != "approved_for_review":
+                    risk_service.release_assessment_reservation(decision.risk_assessment_id)
                     continue
                 approval = await execution_service.create_approval_from_assessment(assessment.assessment_id)
                 try:
                     await execution_service.approve_and_execute(approval.approval_id)
                 except ValueError:
+                    risk_service.release_assessment_reservation(assessment.assessment_id)
                     risk_rejections.append(
                         {
                             "signal_id": assessment.signal_id,
@@ -453,6 +495,7 @@ class ReplayEngine:
             "risk_rejections": risk_rejections,
             "execution_quality_records": _serialize(execution_quality_service.list_records(limit=500)),
             "risk_lock_events": _serialize(risk_lock_manager.list_history(limit=500)),
+            "active_risk_locks_at_end": _serialize(risk_service.list_current_locks()),
             "prediction_market_replay": prediction_market_artifacts,
             "summary": {
                 "basis_opportunity_count": len(basis_artifacts),
@@ -461,12 +504,14 @@ class ReplayEngine:
                 "risk_rejection_count": len(risk_rejections),
                 "execution_quality_count": len(execution_quality_service.list_records(limit=500)),
                 "risk_lock_event_count": len(risk_lock_manager.list_history(limit=500)),
+                "active_risk_lock_count_at_end": len(risk_service.list_current_locks()),
                 "polymarket_snapshot_count": len(config.polymarket_snapshots),
                 "event_observation_count": len(config.event_observations),
                 "wallet_observation_count": len(config.wallet_observations),
             },
         }
         fidelity_notes = [
+            "Completed candle OHLC values become visible only at the interval close boundary to prevent bar-level lookahead.",
             "Replay microstructure uses deterministic synthetic order-book and tape features derived from candle paths and volume.",
             "Replay funding and basis use futures-vs-spot candle approximations when historical funding snapshots are unavailable.",
             "Execution quality in replay reflects simulated fills against replay snapshots, not exchange-confirmed venue latency or queue position.",
@@ -499,7 +544,7 @@ class ReplayEngine:
             trigger_candles = candles.get(symbol.upper(), {}).get(trigger_timeframe, [])
             for candle in trigger_candles:
                 if candle.is_closed:
-                    grouped[candle.open_time].add(symbol.upper())
+                    grouped[candle_close_time(candle.open_time, trigger_timeframe)].add(symbol.upper())
         return sorted(grouped.items(), key=lambda item: item[0])
 
     def _build_trade_results(
@@ -528,6 +573,9 @@ class ReplayEngine:
                     realized_pnl=round(position.realized_pnl, 4),
                     exit_reason=position.close_reason,
                     status=trade.status,
+                    gross_realized_pnl=round(position.gross_realized_pnl, 4),
+                    fees_paid=round(position.fees_paid, 4),
+                    slippage_cost=round(position.slippage_cost, 4),
                 )
             )
         results.sort(key=lambda item: item.opened_at)

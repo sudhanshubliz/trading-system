@@ -87,7 +87,7 @@ def _build_storage(tmp_path: Path):
 def test_real_polymarket_provider_normalizes_public_payloads() -> None:
     async def run() -> None:
         def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path == "/v1/markets":
+            if request.url.path == "/markets":
                 return httpx.Response(
                     200,
                     json=[
@@ -97,25 +97,42 @@ def test_real_polymarket_provider_normalizes_public_payloads() -> None:
                             "question": "Will BTC ETF be approved?",
                             "category": "crypto",
                             "eventSlug": "btc-etf",
-                            "yesPrice": "0.62",
+                            "outcomes": '["Yes", "No"]',
+                            "outcomePrices": '["0.62", "0.38"]',
+                            "clobTokenIds": '["token_yes", "token_no"]',
+                            "conditionId": "condition_btc_etf",
+                            "liquidityNum": "12000",
+                            "feesEnabled": True,
                             "updatedAt": "2026-04-08T10:00:00Z",
-                            "status": "open",
+                            "active": True,
+                            "closed": False,
                         }
                     ],
                 )
-            if request.url.path == "/v1/markets/pm_btc_etf/book":
+            if request.url.path == "/book":
+                token_id = request.url.params["token_id"]
+                is_yes = token_id == "token_yes"
                 return httpx.Response(
                     200,
                     json={
-                        "bids": [{"price": "0.61", "size": "5000"}],
-                        "asks": [{"price": "0.63", "size": "4500"}],
-                        "marketSlug": "pm_btc_etf",
-                        "transactTime": "2026-04-08T10:01:00Z",
+                        "market": "condition_btc_etf",
+                        "asset_id": token_id,
+                        "bids": [{"price": "0.61" if is_yes else "0.37", "size": "5000"}],
+                        "asks": [{"price": "0.63" if is_yes else "0.39", "size": "4500"}],
+                        "timestamp": "1775642460000",
+                        "hash": f"hash_{token_id}",
                     },
                 )
             raise AssertionError(request.url.path)
 
-        settings = _settings(Path("/tmp"), polymarket_base_url="https://example.test", polymarket_timeout_ms=1000)
+        settings = _settings(
+            Path("/tmp"),
+            polymarket_base_url="https://example.test",
+            polymarket_clob_base_url="https://example.test",
+            polymarket_data_base_url="https://example.test",
+            polymarket_timeout_ms=1000,
+            polymarket_stream_enabled=False,
+        )
         transport = httpx.MockTransport(handler)
         async with httpx.AsyncClient(base_url="https://example.test", transport=transport) as client:
             provider = RealPolymarketProvider(settings=settings, client=client)
@@ -126,8 +143,13 @@ def test_real_polymarket_provider_normalizes_public_payloads() -> None:
         assert markets[0].market_id == "pm_btc_etf"
         assert markets[0].yes_price == 0.62
         assert markets[0].no_price == 0.38
+        assert markets[0].yes_token_id == "token_yes"
+        assert markets[0].no_token_id == "token_no"
         assert orderbook is not None
         assert orderbook.depth_usd > 0
+        assert orderbook.yes_asks[0].price == 0.63
+        assert orderbook.no_asks[0].price == 0.39
+        assert orderbook.source == "clob_rest"
         assert health["status"] in {"healthy", "degraded"}
 
     asyncio.run(run())

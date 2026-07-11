@@ -61,6 +61,10 @@ from app.persistence.repositories.trades_repo import TradesRepository
 from app.persistence.repositories.wallet_repo import WalletRepository
 from app.portfolio.service import PortfolioService
 from app.portfolio_brain.service import PortfolioBrainService
+from app.polymarket.execution_market_data import (
+    CompositeExecutionMarketDataService,
+    PolymarketExecutionMarketDataAdapter,
+)
 from app.polymarket.service import PolymarketService
 from app.promotion.service import PromotionService
 from app.provider_health.service import ProviderHealthService
@@ -87,6 +91,7 @@ async def startup(app: FastAPI) -> None:
     settings = get_settings()
     init_db()
     app.state.market_data_service = None
+    app.state.execution_market_data_service = None
     app.state.signal_service = None
     app.state.risk_service = None
     app.state.execution_service = None
@@ -294,6 +299,10 @@ async def startup(app: FastAPI) -> None:
         events_repo=persistence_repos.get("events_repo"),
         provider_health_service=app.state.provider_health_service,
     )
+    app.state.execution_market_data_service = CompositeExecutionMarketDataService(
+        primary=app.state.market_data_service,
+        polymarket=PolymarketExecutionMarketDataAdapter(app.state.polymarket_service),
+    )
 
     app.state.wallet_intel_service = WalletIntelService(
         settings=settings,
@@ -361,7 +370,7 @@ async def startup(app: FastAPI) -> None:
         app.state.risk_service = RiskService(
             settings=settings,
             signal_service=app.state.signal_service,
-            market_data_service=app.state.market_data_service,
+            market_data_service=app.state.execution_market_data_service,
             risk_repo=persistence_repos.get("risk_repo"),
             events_repo=persistence_repos.get("events_repo"),
             risk_lock_manager=risk_lock_manager,
@@ -438,7 +447,7 @@ async def startup(app: FastAPI) -> None:
         app.state.execution_service = ExecutionService(
             settings=settings,
             risk_service=app.state.risk_service,
-            market_data_service=app.state.market_data_service,
+            market_data_service=app.state.execution_market_data_service,
             approvals_repo=persistence_repos.get("approvals_repo"),
             trades_repo=persistence_repos.get("trades_repo"),
             positions_repo=persistence_repos.get("positions_repo"),
@@ -469,6 +478,7 @@ async def startup(app: FastAPI) -> None:
         app.state.alpha_fusion_service.research_service = app.state.research_service
     app.state.research_service.bootstrap_defaults()
     await app.state.polymarket_service.refresh()
+    await app.state.polymarket_service.start()
     await app.state.wallet_intel_service.refresh()
     await app.state.event_signals_service.refresh()
     if app.state.provider_health_service is not None:
@@ -508,7 +518,7 @@ async def startup(app: FastAPI) -> None:
         shadow_risk_service = RiskService(
             settings=shadow_settings,
             signal_service=shadow_signal_service,
-            market_data_service=app.state.market_data_service,
+            market_data_service=app.state.execution_market_data_service,
             risk_lock_manager=risk_lock_manager,
             execution_quality_service=app.state.execution_quality_service,
             arbitrage_service=app.state.arbitrage_service,
@@ -519,7 +529,7 @@ async def startup(app: FastAPI) -> None:
         shadow_execution_service = ExecutionService(
             settings=shadow_settings,
             risk_service=shadow_risk_service,
-            market_data_service=app.state.market_data_service,
+            market_data_service=app.state.execution_market_data_service,
             execution_mode="shadow",
             approvals_repo=persistence_repos.get("approvals_repo"),
             trades_repo=persistence_repos.get("trades_repo"),
@@ -650,6 +660,10 @@ async def startup(app: FastAPI) -> None:
 
 
 async def shutdown(app: FastAPI) -> None:
+    polymarket_service = getattr(app.state, "polymarket_service", None)
+    if polymarket_service is not None and hasattr(polymarket_service, "stop"):
+        await polymarket_service.stop()
+
     execution_service = getattr(app.state, "execution_service", None)
     if execution_service is not None and hasattr(execution_service, "stop"):
         await execution_service.stop()

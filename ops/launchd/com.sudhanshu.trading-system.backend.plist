@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.sudhanshu.trading-system.backend</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-l</string>
+    <string>-c</string>
+    <string>cd /Users/sudhanshu_thakur/Documents/workspace/binance/trading-system &amp;&amp; HOST=127.0.0.1; PORT=3030; PID=$(lsof -tiTCP:${PORT} -sTCP:LISTEN -n -P 2&gt;/dev/null | head -n 1 || true); if [[ -n "${PID}" ]]; then CWD=$(lsof -a -p "${PID}" -d cwd -Fn 2&gt;/dev/null | sed -n 's/^n//p' || true); if [[ "${CWD}" == "/Users/sudhanshu_thakur/Documents/workspace/binance/trading-system" ]]; then echo "trading-system backend already listening on ${HOST}:${PORT} (pid=${PID})"; exit 0; fi; echo "refusing to start trading-system backend on ${HOST}:${PORT}: pid=${PID} cwd=${CWD}" &gt;&amp;2; exit 1; fi; exec ./.venv/bin/python3 -m uvicorn app.main:app --host ${HOST} --port ${PORT}</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/sudhanshu_thakur/Documents/workspace/binance/trading-system</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/sudhanshu_thakur/Documents/workspace/binance/trading-system/logs/backend_service.launchd.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/sudhanshu_thakur/Documents/workspace/binance/trading-system/logs/backend_service.launchd.err.log</string>
+</dict>
+</plist>

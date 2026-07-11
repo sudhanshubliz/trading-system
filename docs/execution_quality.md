@@ -23,6 +23,8 @@ Records are written for:
 - arrival mid price
 - actual fill price
 - expected and realized slippage
+- entry/exit fee attribution in the associated trade and position records
+- gross P&L, net P&L, and simulated slippage-cost attribution
 - latency
 - partial-fill ratio
 - fill-quality score
@@ -57,3 +59,6 @@ Supported list filters:
 - execution-quality records do not change orders directly
 - they are used by Phase 2 anomaly locks and operator review flows
 - repeated poor quality can trigger `execution_anomaly_lock`
+- paper, shadow, and replay net P&L deduct both entry and exit fees
+- simulated adverse slippage changes the fill price and is reported separately; it is not deducted from P&L a second time
+- live fills are never assigned synthetic paper costs because exchange-confirmed execution remains the source of truth

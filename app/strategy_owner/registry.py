@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Iterable
+from typing import Callable, Iterable
 
 from app.alpha_fusion.types import AlphaSourceReading, FusedAlphaSignal
 from app.arbitrage.types import BasisFundingOpportunity
 from app.event_signals.types import EventSignalCandidate
+from app.execution.costs import estimate_cost_aware_edge
 from app.features.microstructure.types import MicrostructureFeatureSnapshot
 from app.market_data.types import OrderBookSnapshot, TickerSnapshot
 from app.polymarket.types import PolymarketOpportunity
@@ -21,20 +22,50 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _age_score(timestamp: datetime, *, max_age_seconds: int) -> float:
-    age_seconds = max((utc_now() - timestamp).total_seconds(), 0.0)
+def _age_score(
+    timestamp: datetime,
+    *,
+    max_age_seconds: int,
+    time_provider: Callable[[], datetime] = utc_now,
+) -> float:
+    age_seconds = max((time_provider() - timestamp).total_seconds(), 0.0)
     if max_age_seconds <= 0:
         return 1.0
     return max(0.0, min(1.0, 1.0 - (age_seconds / max_age_seconds)))
 
 
 class StrategyOwnerRegistry:
-    def __init__(self, *, settings: object) -> None:
+    def __init__(
+        self,
+        *,
+        settings: object,
+        time_provider: Callable[[], datetime] | None = None,
+    ) -> None:
         self.settings = settings
+        self.time_provider = time_provider or utc_now
+
+    def _age_score(self, timestamp: datetime, *, max_age_seconds: int) -> float:
+        return _age_score(
+            timestamp,
+            max_age_seconds=max_age_seconds,
+            time_provider=self.time_provider,
+        )
 
     def from_signal(self, item: CandidateSignal, *, ticker: TickerSnapshot | None, order_book: OrderBookSnapshot | None) -> StrategyDecisionCandidate:
         liquidity_score = self._crypto_liquidity_score(ticker, order_book)
-        expected_value_bps = max(item.reward_risk_ratio, 0.0) * max(item.confidence_score / 100.0, 0.0) * 100.0
+        edge = estimate_cost_aware_edge(
+            entry_price=item.entry_price,
+            stop_loss=item.stop_loss,
+            target_price=item.target_1,
+            confidence=item.confidence_score / 100.0,
+            fee_bps_per_side=self.settings.paper_execution_fee_bps,
+            slippage_bps_per_side=self.settings.paper_execution_base_slippage_bps,
+        )
+        expected_value_bps = (
+            edge.net_edge_after_costs_bps
+            if self.settings.enable_cost_aware_trade_filter
+            else edge.gross_expected_edge_bps
+        )
         return StrategyDecisionCandidate(
             candidate_id=item.signal_id,
             source_name="signal_service",
@@ -44,7 +75,7 @@ class StrategyOwnerRegistry:
             confidence=max(min(item.confidence_score / 100.0, 1.0), 0.0),
             expected_value_bps=round(expected_value_bps, 6),
             liquidity_score=liquidity_score,
-            freshness_score=_age_score(item.generated_at, max_age_seconds=self.settings.strategy_owner_max_candidate_age_seconds),
+            freshness_score=self._age_score(item.generated_at, max_age_seconds=self.settings.strategy_owner_max_candidate_age_seconds),
             execution_quality_score=0.55,
             provider_health_score=0.65,
             regime_score=0.6,
@@ -63,7 +94,13 @@ class StrategyOwnerRegistry:
             target_2=item.target_2,
             reward_risk_ratio=item.reward_risk_ratio,
             notes=list(item.rationale),
-            metadata={"indicators_snapshot": item.indicators_snapshot},
+            metadata={
+                "indicators_snapshot": item.indicators_snapshot,
+                "cost_aware": self.settings.enable_cost_aware_trade_filter,
+                "gross_expected_edge_bps": edge.gross_expected_edge_bps,
+                "estimated_round_trip_cost_bps": edge.estimated_round_trip_cost_bps,
+                "net_edge_after_costs_bps": edge.net_edge_after_costs_bps,
+            },
         )
 
     def from_fused_signal(self, item: FusedAlphaSignal, *, ticker: TickerSnapshot | None, order_book: OrderBookSnapshot | None) -> StrategyDecisionCandidate:
@@ -77,7 +114,7 @@ class StrategyOwnerRegistry:
             confidence=item.confidence,
             expected_value_bps=round(item.score * 100.0, 6),
             liquidity_score=liquidity_score,
-            freshness_score=_age_score(item.generated_at, max_age_seconds=self.settings.strategy_owner_max_candidate_age_seconds),
+            freshness_score=self._age_score(item.generated_at, max_age_seconds=self.settings.strategy_owner_max_candidate_age_seconds),
             execution_quality_score=0.55,
             provider_health_score=0.65,
             regime_score=0.6,
@@ -104,7 +141,7 @@ class StrategyOwnerRegistry:
             confidence=item.confidence,
             expected_value_bps=item.net_edge_estimate,
             liquidity_score=1.0 if item.tradable else 0.25,
-            freshness_score=_age_score(item.timestamp, max_age_seconds=self.settings.strategy_owner_max_candidate_age_seconds),
+            freshness_score=self._age_score(item.timestamp, max_age_seconds=self.settings.strategy_owner_max_candidate_age_seconds),
             execution_quality_score=0.55,
             provider_health_score=0.65,
             regime_score=0.55,
@@ -131,7 +168,7 @@ class StrategyOwnerRegistry:
             confidence=item.confidence,
             expected_value_bps=round(max(item.confidence, 0.0) * 20.0, 6),
             liquidity_score=max(min((item.total_depth_usd or 0.0) / max(self.settings.strategy_owner_liquidity_depth_target_usd, 1.0), 1.0), 0.0),
-            freshness_score=_age_score(item.timestamp, max_age_seconds=self.settings.strategy_owner_max_candidate_age_seconds),
+            freshness_score=self._age_score(item.timestamp, max_age_seconds=self.settings.strategy_owner_max_candidate_age_seconds),
             execution_quality_score=0.55,
             provider_health_score=0.65,
             regime_score=0.55,
@@ -162,7 +199,7 @@ class StrategyOwnerRegistry:
             confidence=item.confidence,
             expected_value_bps=item.net_edge_estimate,
             liquidity_score=max(min((item.liquidity_estimate or 0.0) / max(self.settings.polymarket_min_depth_usd, 1.0), 1.0), 0.0),
-            freshness_score=_age_score(item.timestamp, max_age_seconds=self.settings.polymarket_max_data_age_seconds),
+            freshness_score=self._age_score(item.timestamp, max_age_seconds=self.settings.polymarket_max_data_age_seconds),
             execution_quality_score=0.55,
             provider_health_score=0.65,
             regime_score=0.55,
@@ -190,7 +227,7 @@ class StrategyOwnerRegistry:
             confidence=item.confidence,
             expected_value_bps=round(item.quality_score_snapshot * 20.0, 6),
             liquidity_score=max(0.0, 1.0 - item.crowding_risk),
-            freshness_score=_age_score(item.timestamp, max_age_seconds=self.settings.wallet_max_data_age_seconds),
+            freshness_score=self._age_score(item.timestamp, max_age_seconds=self.settings.wallet_max_data_age_seconds),
             execution_quality_score=0.55,
             provider_health_score=0.65,
             regime_score=0.5,
@@ -235,6 +272,26 @@ class StrategyOwnerRegistry:
         )
 
     def from_latency_arb(self, item: LatencyArbOpportunity) -> StrategyDecisionCandidate:
+        entry_price = item.execution_price
+        full_reward_distance = max(item.fair_probability - (entry_price or 0.0), 0.0)
+        target_1 = (
+            (entry_price or 0.0) + (full_reward_distance * 0.5)
+            if entry_price is not None and full_reward_distance > 0
+            else None
+        )
+        reward_distance = max((target_1 or 0.0) - (entry_price or 0.0), 0.0)
+        if entry_price is not None and reward_distance > 0:
+            min_stop = entry_price * self.settings.min_stop_distance_pct / 100.0 * 1.05
+            max_stop = entry_price * self.settings.max_stop_distance_pct / 100.0 * 0.8
+            stop_distance = max(min(reward_distance / 2.0, max_stop), min_stop)
+            stop_loss = max(entry_price - stop_distance, 0.01)
+        else:
+            stop_loss = None
+        reward_risk_ratio = (
+            reward_distance / max((entry_price or 0.0) - (stop_loss or 0.0), 1e-9)
+            if entry_price is not None and stop_loss is not None and reward_distance > 0
+            else None
+        )
         return StrategyDecisionCandidate(
             candidate_id=f"sod_{item.opportunity_id}",
             source_name="latency_arbitrage",
@@ -244,7 +301,7 @@ class StrategyOwnerRegistry:
             confidence=item.confidence,
             expected_value_bps=item.net_edge_bps,
             liquidity_score=max(min(item.depth_usd / max(self.settings.latency_arb_min_depth_usd, 1.0), 1.0), 0.0),
-            freshness_score=_age_score(item.timestamp, max_age_seconds=self.settings.latency_arb_max_data_age_sec),
+            freshness_score=self._age_score(item.timestamp, max_age_seconds=self.settings.latency_arb_max_data_age_sec),
             execution_quality_score=0.5,
             provider_health_score=0.65,
             regime_score=0.55,
@@ -253,12 +310,25 @@ class StrategyOwnerRegistry:
             overall_score=0.0,
             timestamp=item.timestamp,
             expected_holding_period="minutes",
-            tradable=item.tradable,
-            requires_risk_review=False,
+            tradable=item.tradable and item.paper_only,
+            requires_risk_review=item.tradable and item.paper_only,
             source_reference_id=item.opportunity_id,
             strategy_name="latency_arbitrage",
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            target_1=target_1,
+            target_2=min(item.fair_probability, 0.99) if target_1 is not None else None,
+            reward_risk_ratio=reward_risk_ratio,
             notes=list(item.explanation),
-            metadata=item.metadata,
+            metadata={
+                **item.metadata,
+                "paper_only": True,
+                "cost_aware": True,
+                "gross_expected_edge_bps": item.gross_edge_bps,
+                "estimated_fee_bps": item.fee_estimate_bps,
+                "estimated_slippage_bps": item.slippage_estimate_bps,
+                "net_edge_after_costs_bps": item.net_edge_bps,
+            },
         )
 
     def from_market_making(self, item: MarketMakingQuote) -> StrategyDecisionCandidate:
@@ -271,7 +341,7 @@ class StrategyOwnerRegistry:
             confidence=min(1.0, item.expected_spread_capture_bps / max(self.settings.market_making_min_spread_bps, 1.0)),
             expected_value_bps=item.expected_spread_capture_bps,
             liquidity_score=0.65,
-            freshness_score=_age_score(item.timestamp, max_age_seconds=self.settings.strategy_owner_max_candidate_age_seconds),
+            freshness_score=self._age_score(item.timestamp, max_age_seconds=self.settings.strategy_owner_max_candidate_age_seconds),
             execution_quality_score=0.45,
             provider_health_score=0.65,
             regime_score=0.5,
@@ -289,6 +359,8 @@ class StrategyOwnerRegistry:
         )
 
     def from_source_reading(self, item: AlphaSourceReading) -> StrategyDecisionCandidate:
+        advisory_only = bool(item.metadata.get("advisory_only")) or item.strategy_family == "mirofish_simulation"
+        upstream_rejected = item.raw_signal.get("tradable") is False
         return StrategyDecisionCandidate(
             candidate_id=f"sod_{item.reading_id}",
             source_name=item.source_name,
@@ -298,7 +370,7 @@ class StrategyOwnerRegistry:
             confidence=item.confidence,
             expected_value_bps=round(item.confidence * 10.0, 6),
             liquidity_score=0.55,
-            freshness_score=_age_score(item.timestamp, max_age_seconds=self.settings.strategy_owner_max_candidate_age_seconds),
+            freshness_score=self._age_score(item.timestamp, max_age_seconds=self.settings.strategy_owner_max_candidate_age_seconds),
             execution_quality_score=0.55,
             provider_health_score=0.65,
             regime_score=0.55,
@@ -307,12 +379,12 @@ class StrategyOwnerRegistry:
             overall_score=0.0,
             timestamp=item.timestamp,
             expected_holding_period=item.expected_holding_period,
-            tradable=True,
-            requires_risk_review=False,
+            tradable=not advisory_only and not upstream_rejected and item.direction != "neutral",
+            requires_risk_review=not advisory_only and not upstream_rejected and item.direction != "neutral",
             source_reference_id=item.reading_id,
             strategy_name=item.strategy_family,
             notes=[],
-            metadata={"raw_signal": item.raw_signal, **dict(item.metadata)},
+            metadata={"raw_signal": item.raw_signal, "advisory_only": advisory_only, **dict(item.metadata)},
         )
 
     def to_metrics_snapshot(self, candidate: StrategyDecisionCandidate) -> dict[str, float | str | bool | None]:

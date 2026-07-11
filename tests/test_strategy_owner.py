@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -21,6 +21,7 @@ from app.promotion.service import PromotionService
 from app.regime.types import RegimeSnapshot
 from app.risk.types import AccountState, ExposureState, RiskAssessment, RiskCheckResult, RiskSummary
 from app.signals.types import CandidateSignal
+from app.strategy_owner.registry import StrategyOwnerRegistry
 from app.strategy_owner.service import StrategyOwnerService
 from app.wallet_intel.types import WalletSignal
 
@@ -180,6 +181,22 @@ class StubRiskService:
         )
 
 
+class RecoveringLockRiskService(StubRiskService):
+    def __init__(self) -> None:
+        self.lock_active = True
+        self.validation_calls = 0
+
+    def list_current_locks(self):
+        if not self.lock_active:
+            return []
+        return [{"is_active": True, "lock_type": "liquidity_thin_lock"}]
+
+    async def validate_signal_payload(self, payload):
+        self.validation_calls += 1
+        self.lock_active = False
+        return await super().validate_signal_payload(payload)
+
+
 def _build_service(tmp_path: Path) -> StrategyOwnerService:
     settings = get_settings().model_copy(
         update={
@@ -261,3 +278,42 @@ def test_strategy_owner_api_exposes_decisions_and_rejections(tmp_path: Path) -> 
     rejections = client.get("/api/v1/strategy-owner/rejections")
     assert rejections.status_code == 200
     assert rejections.json()["count"] == 1
+
+
+def test_strategy_owner_registry_uses_replay_clock_for_freshness() -> None:
+    replay_now = datetime(2026, 4, 2, 18, 35, tzinfo=timezone.utc)
+    signal = CandidateSignal(
+        signal_id="sig_replay_btc_long",
+        symbol="BTCUSDT",
+        side="long",
+        strategy_name="trend_follow_continuation",
+        confidence_score=74,
+        entry_price=68500.0,
+        stop_loss=68100.0,
+        target_1=69150.0,
+        target_2=69550.0,
+        reward_risk_ratio=1.8,
+        rationale=["historical replay signal"],
+        indicators_snapshot={},
+        generated_at=replay_now - timedelta(seconds=1),
+    )
+    registry = StrategyOwnerRegistry(
+        settings=get_settings(),
+        time_provider=lambda: replay_now,
+    )
+
+    candidate = registry.from_signal(signal, ticker=None, order_book=None)
+
+    assert candidate.freshness_score > 0.9
+
+
+def test_strategy_owner_defers_dynamic_lock_recovery_to_risk_service(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    risk_service = RecoveringLockRiskService()
+    service.risk_service = risk_service
+    service.evaluator.risk_service = risk_service
+
+    result = __import__("asyncio").run(service.evaluate(symbols=["BTCUSDT"]))
+
+    assert risk_service.validation_calls == 1
+    assert any(item.status == "accepted_for_risk" for item in result.decisions)

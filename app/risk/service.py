@@ -5,7 +5,7 @@ import inspect
 import logging
 from collections import OrderedDict
 from dataclasses import asdict, is_dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from app.config.settings import Settings, get_settings
@@ -58,12 +58,14 @@ class RiskService:
         self.engine = RiskEngine(self.settings, time_provider=self.time_provider)
         self.exposure_manager = ExposureManager(self.settings, time_provider=self.time_provider)
         self._assessments: OrderedDict[str, RiskAssessment] = OrderedDict()
+        self._released_assessment_ids: set[str] = set()
+        self._last_approved_at_by_strategy: dict[tuple[str, str], datetime] = {}
 
     async def stop(self) -> None:
         return None
 
     def get_summary(self) -> RiskSummary:
-        return self.exposure_manager.get_risk_summary(list(self._assessments.values()))
+        return self.exposure_manager.get_risk_summary(self._active_exposure_assessments())
 
     def get_assessments(self) -> list[RiskAssessment]:
         return [replace(assessment) for assessment in self._assessments.values()]
@@ -78,6 +80,16 @@ class RiskService:
                 self._store_assessment(assessment)
                 return replace(assessment)
         return None
+
+    def release_assessment_reservation(self, assessment_id: str) -> bool:
+        assessment = next(
+            (item for item in self._assessments.values() if item.assessment_id == assessment_id),
+            None,
+        )
+        if assessment is None or assessment.final_decision != "approved_for_review":
+            return False
+        self._released_assessment_ids.add(assessment_id)
+        return True
 
     def list_current_locks(self) -> list[dict[str, object]]:
         if self.risk_lock_manager is None:
@@ -127,9 +139,10 @@ class RiskService:
         if existing is not None:
             return replace(existing)
 
-        account_state = self.exposure_manager.get_account_state(list(self._assessments.values()))
-        exposure_state = self.exposure_manager.get_exposure_state(list(self._assessments.values()))
-        market_data_status = await self._get_market_data_status()
+        active_assessments = self._active_exposure_assessments()
+        account_state = self.exposure_manager.get_account_state(active_assessments)
+        exposure_state = self.exposure_manager.get_exposure_state(active_assessments)
+        market_data_status = await self._get_market_data_status(validation_input.symbol)
 
         assessment = self.engine.assess(
             validation_input,
@@ -137,8 +150,10 @@ class RiskService:
             exposure_state,
             market_data_status=market_data_status,
             cycle_limit_passed=True,
+            turnover_cooldown_passed=self._turnover_cooldown_passed(validation_input),
         )
         assessment = await self._apply_phase2_risk_locks(assessment, validation_input)
+        self._record_approval_time(assessment)
         self._store_assessment(assessment)
         return replace(assessment)
 
@@ -154,10 +169,10 @@ class RiskService:
             return []
 
         candidate_signals = await self._maybe_await(evaluate_symbols(symbols))
+        candidate_signals = self._merge_fresh_cached_signals(signal_service, candidate_signals, symbols)
         if not candidate_signals:
             return []
 
-        market_data_status = await self._get_market_data_status()
         results: list[RiskAssessment] = []
         cycle_approved_count = 0
 
@@ -170,16 +185,20 @@ class RiskService:
                     cycle_approved_count += 1
                 continue
 
-            account_state = self.exposure_manager.get_account_state(list(self._assessments.values()))
-            exposure_state = self.exposure_manager.get_exposure_state(list(self._assessments.values()))
+            active_assessments = self._active_exposure_assessments()
+            account_state = self.exposure_manager.get_account_state(active_assessments)
+            exposure_state = self.exposure_manager.get_exposure_state(active_assessments)
+            market_data_status = await self._get_market_data_status(validation_input.symbol)
             assessment = self.engine.assess(
                 validation_input,
                 account_state,
                 exposure_state,
                 market_data_status=market_data_status,
                 cycle_limit_passed=cycle_approved_count < 3,
+                turnover_cooldown_passed=self._turnover_cooldown_passed(validation_input),
             )
             assessment = await self._apply_phase2_risk_locks(assessment, validation_input)
+            self._record_approval_time(assessment)
             if assessment.final_decision == "approved_for_review":
                 cycle_approved_count += 1
 
@@ -187,6 +206,38 @@ class RiskService:
             results.append(replace(assessment))
 
         return results
+
+    def _merge_fresh_cached_signals(
+        self,
+        signal_service: object,
+        candidate_signals: list[CandidateSignal],
+        symbols: list[str] | None,
+    ) -> list[CandidateSignal]:
+        get_signals = getattr(signal_service, "get_signals", None)
+        if get_signals is None:
+            return candidate_signals
+
+        normalized_symbols = {symbol.upper() for symbol in symbols or []}
+        freshness_cutoff = self.time_provider() - timedelta(minutes=5)
+        merged: OrderedDict[str, CandidateSignal] = OrderedDict(
+            (signal.signal_id, signal) for signal in candidate_signals
+        )
+
+        try:
+            cached_signals = get_signals(limit=self.settings.signals_store_limit)
+        except TypeError:
+            cached_signals = get_signals()
+
+        for signal in cached_signals:
+            if normalized_symbols and signal.symbol.upper() not in normalized_symbols:
+                continue
+            if signal.generated_at < freshness_cutoff:
+                continue
+            if signal.signal_id in self._assessments:
+                continue
+            merged.setdefault(signal.signal_id, signal)
+
+        return list(merged.values())
 
     def _store_assessment(self, assessment: RiskAssessment) -> None:
         signal_id = assessment.signal_id
@@ -218,7 +269,7 @@ class RiskService:
             rejection_reasons=assessment.rejection_reasons,
         )
 
-    async def _get_market_data_status(self) -> str | None:
+    async def _get_market_data_status(self, symbol: str | None = None) -> str | None:
         market_data_service = self.market_data_service
         if market_data_service is None:
             return None
@@ -228,16 +279,23 @@ class RiskService:
             return None
 
         try:
-            health = await self._maybe_await(get_health())
+            try:
+                health = await self._maybe_await(get_health(symbol=symbol))
+            except TypeError:
+                health = await self._maybe_await(get_health())
         except Exception:
             logger.warning("failed to fetch market data health for risk assessment")
             return "degraded"
 
         if isinstance(health, dict):
             status = health.get("status")
+            if status == "healthy":
+                return "ok"
             return str(status) if status is not None else None
 
         status = getattr(health, "status", None)
+        if status == "healthy":
+            return "ok"
         return str(status) if status is not None else None
 
     async def _apply_phase2_risk_locks(
@@ -249,6 +307,7 @@ class RiskService:
             return assessment
 
         symbol = validation_input.symbol.upper()
+        is_prediction_market = validation_input.metadata.get("market_class") == "prediction_market"
         active_before = {item.lock_key for item in self.risk_lock_manager.list_current()}
         payload_locks: list[dict[str, object]] = []
 
@@ -258,8 +317,13 @@ class RiskService:
             if get_order_book is not None:
                 order_book = await self._maybe_await(get_order_book(symbol))
                 if self.settings.enable_stale_data_lock:
+                    stale_seconds = (
+                        self.settings.latency_arb_max_data_age_sec
+                        if is_prediction_market
+                        else self.settings.microstructure_stale_book_seconds
+                    )
                     stale = order_book is None or getattr(order_book, "updated_at", None) is None or (
-                        (self.time_provider() - order_book.updated_at).total_seconds() > self.settings.microstructure_stale_book_seconds
+                        (self.time_provider() - order_book.updated_at).total_seconds() > stale_seconds
                     )
                     self._toggle_lock(
                         enabled=True,
@@ -279,8 +343,18 @@ class RiskService:
                     if bids and asks:
                         mid = (bids[0].price + asks[0].price) / 2
                         if mid > 0:
-                            spread = ((asks[0].price - bids[0].price) / mid) * 10000
-                    thin = total_depth < self.settings.microstructure_min_depth_usd or spread > self.settings.microstructure_max_relative_spread_bps
+                            spread = round(((asks[0].price - bids[0].price) / mid) * 10000, 9)
+                    minimum_depth = (
+                        self.settings.latency_arb_min_depth_usd
+                        if is_prediction_market
+                        else self.settings.microstructure_min_depth_usd
+                    )
+                    maximum_spread = (
+                        self.settings.latency_arb_max_spread_bps
+                        if is_prediction_market
+                        else self.settings.microstructure_max_relative_spread_bps
+                    )
+                    thin = total_depth < minimum_depth or spread > maximum_spread
                     self._toggle_lock(
                         enabled=True,
                         condition=thin,
@@ -292,7 +366,7 @@ class RiskService:
                         metrics_snapshot={"total_depth_usd": total_depth, "spread_bps": spread},
                     )
 
-        if self.settings.enable_volatility_shock_lock and self.microstructure_service is not None:
+        if not is_prediction_market and self.settings.enable_volatility_shock_lock and self.microstructure_service is not None:
             latest_micro = self.microstructure_service.get_latest(symbol)
             shock = latest_micro is not None and (
                 latest_micro.market_state in {"toxic_flow_risk", "unstable_quotes"}
@@ -325,7 +399,7 @@ class RiskService:
                 metrics_snapshot=anomaly_state,
             )
 
-        if self.settings.enable_basis_data_integrity_lock and self.arbitrage_service is not None:
+        if not is_prediction_market and self.settings.enable_basis_data_integrity_lock and self.arbitrage_service is not None:
             integrity = await self._maybe_await(self.arbitrage_service.get_integrity_status(symbol))
             self._toggle_lock(
                 enabled=True,
@@ -338,17 +412,25 @@ class RiskService:
                 metrics_snapshot=integrity,
             )
 
-        if self.provider_health_service is not None and hasattr(self.provider_health_service, "any_unhealthy"):
-            provider_unhealthy = bool(self.provider_health_service.any_unhealthy(["polymarket", "wallet_intel", "event_signals"]))
+        relevant_providers = self._relevant_provider_names(validation_input)
+        if (
+            relevant_providers
+            and self.provider_health_service is not None
+            and hasattr(self.provider_health_service, "any_unhealthy")
+        ):
+            provider_unhealthy = bool(self.provider_health_service.any_unhealthy(relevant_providers))
             self._toggle_lock(
                 enabled=True,
                 condition=provider_unhealthy,
                 lock_type="provider_health_lock",
-                scope="system",
-                scope_key="global",
+                scope="symbol",
+                scope_key=symbol,
                 severity="critical",
                 reason="provider_health_degraded",
-                metrics_snapshot={"provider_unhealthy": provider_unhealthy},
+                metrics_snapshot={
+                    "provider_unhealthy": provider_unhealthy,
+                    "providers": relevant_providers,
+                },
             )
 
         active_current = self.risk_lock_manager.list_current()
@@ -437,6 +519,44 @@ class RiskService:
             )
         else:
             self.risk_lock_manager.clear(lock_type=lock_type, scope=scope, scope_key=scope_key, reason="condition_cleared")
+
+    def _active_exposure_assessments(self) -> list[RiskAssessment]:
+        return [
+            assessment
+            for assessment in self._assessments.values()
+            if assessment.assessment_id not in self._released_assessment_ids
+        ]
+
+    def _relevant_provider_names(self, validation_input: RiskValidationInput) -> list[str]:
+        source_name = str(validation_input.metadata.get("source_name") or "").lower()
+        market_class = str(validation_input.metadata.get("market_class") or "").lower()
+        providers: list[str] = []
+        if market_class == "prediction_market" or source_name in {
+            "latency_arbitrage",
+            "polymarket_mispricing",
+        }:
+            providers.append("polymarket")
+        if source_name == "wallet_intelligence":
+            providers.append("wallet_intel")
+        if source_name == "event_signals":
+            providers.append("event_signals")
+        return providers
+
+    def _turnover_cooldown_passed(self, validation_input: RiskValidationInput) -> bool:
+        cooldown_minutes = max(self.settings.strategy_trade_cooldown_minutes, 0)
+        if cooldown_minutes == 0:
+            return True
+        key = (validation_input.symbol.upper(), validation_input.strategy_name)
+        last_approved_at = self._last_approved_at_by_strategy.get(key)
+        if last_approved_at is None:
+            return True
+        return self.time_provider() - last_approved_at >= timedelta(minutes=cooldown_minutes)
+
+    def _record_approval_time(self, assessment: RiskAssessment) -> None:
+        if assessment.final_decision != "approved_for_review":
+            return
+        key = (assessment.symbol.upper(), assessment.strategy_name)
+        self._last_approved_at_by_strategy[key] = assessment.assessed_at or self.time_provider()
 
     def _to_validation_input(self, payload: Any) -> RiskValidationInput:
         data = self._to_mapping(payload)

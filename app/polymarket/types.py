@@ -4,6 +4,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 
+@dataclass(slots=True, frozen=True)
+class PolymarketBookLevel:
+    price: float
+    size: float
+
+
 @dataclass(slots=True)
 class PolymarketOrderBook:
     market_id: str
@@ -14,6 +20,13 @@ class PolymarketOrderBook:
     depth_usd: float
     spread_bps: float | None
     captured_at: datetime
+    yes_bids: list[PolymarketBookLevel] = field(default_factory=list)
+    yes_asks: list[PolymarketBookLevel] = field(default_factory=list)
+    no_bids: list[PolymarketBookLevel] = field(default_factory=list)
+    no_asks: list[PolymarketBookLevel] = field(default_factory=list)
+    source: str = "unknown"
+    source_hash: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -29,6 +42,13 @@ class PolymarketMarket:
     no_price: float | None
     linked_group: str | None = None
     linked_rule: str | None = None
+    condition_id: str | None = None
+    yes_token_id: str | None = None
+    no_token_id: str | None = None
+    liquidity_usd: float | None = None
+    fees_enabled: bool = False
+    fee_rate: float = 0.0
+    source: str = "unknown"
     metadata: dict[str, object] = field(default_factory=dict)
 
 
@@ -69,4 +89,3 @@ class PolymarketOpportunity:
     expected_holding_period: str
     explanation: list[str]
     metadata: dict[str, object] = field(default_factory=dict)
-

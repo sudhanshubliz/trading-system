@@ -52,9 +52,14 @@ class PositionResponse(BaseModel):
     updated_at: datetime
     closed_at: datetime | None = None
     realized_pnl: float
+    gross_realized_pnl: float = 0.0
+    fees_paid: float = 0.0
+    slippage_cost: float = 0.0
     unrealized_pnl: float
     target_1_hit: bool
     close_reason: str | None = None
+    fee_model: str = "fixed_bps"
+    fee_rate: float = 0.0
 
 
 class PositionListResponse(BaseModel):
@@ -83,6 +88,11 @@ class TradeResponse(BaseModel):
     updated_at: datetime
     closed_at: datetime | None = None
     realized_pnl: float
+    gross_realized_pnl: float = 0.0
+    fees_paid: float = 0.0
+    slippage_cost: float = 0.0
+    fee_model: str = "fixed_bps"
+    fee_rate: float = 0.0
 
 
 class TradeListResponse(BaseModel):
@@ -98,6 +108,9 @@ class PnlResponse(BaseModel):
     closed_positions: int
     total_trades: int
     timestamp: datetime
+    gross_realized_pnl_total: float = 0.0
+    fees_paid_total: float = 0.0
+    slippage_cost_total: float = 0.0
 
 
 class ControlStatusResponse(BaseModel):

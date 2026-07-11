@@ -13,4 +13,9 @@ class MiroFishScenarioSummary:
     expected_crowd_bias: float
     scenario_confidence: float
     timestamp: datetime
+    direction_bias: str = "neutral"
+    explanation: str = ""
+    source_name: str = "mirofish_simulation"
+    advisory_only: bool = True
+    provider_status: str = "unknown"
     metadata: dict[str, object] = field(default_factory=dict)

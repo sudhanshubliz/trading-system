@@ -92,8 +92,17 @@ class StrategyCandidateEvaluator:
 
     def rejection_reasons(self, candidate: StrategyDecisionCandidate) -> list[str]:
         reasons: list[str] = []
-        if candidate.expected_value_bps < self.settings.strategy_owner_min_expected_value_bps:
-            reasons.append("expected_value_below_floor")
+        expected_value_floor = (
+            self.settings.min_net_edge_after_costs_bps
+            if candidate.metadata.get("cost_aware")
+            else self.settings.strategy_owner_min_expected_value_bps
+        )
+        if candidate.expected_value_bps < expected_value_floor:
+            reasons.append(
+                "net_edge_after_costs_below_minimum"
+                if candidate.metadata.get("cost_aware")
+                else "expected_value_below_floor"
+            )
         if candidate.confidence < self.settings.strategy_owner_min_confidence:
             reasons.append("confidence_below_floor")
         if candidate.liquidity_score < self.settings.strategy_owner_min_liquidity_score:
@@ -118,8 +127,8 @@ class StrategyCandidateEvaluator:
         )
         if not allowed:
             reasons.extend(gate_reasons)
-        if self.risk_service is not None and any(item.get("is_active") for item in self.risk_service.list_current_locks()):
-            reasons.append("active_risk_lock_present")
+        # RiskService reevaluates dynamic locks before every executable decision,
+        # allowing recovered market conditions to clear a lock without bypassing it.
         return reasons
 
     def _provider_health_score(self, provider_names: list[str]) -> tuple[float, list[str]]:

@@ -4,7 +4,7 @@ import hashlib
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from app.persistence.repositories.events_repo import EventsRepository
 
@@ -38,9 +38,11 @@ class RiskLockManager:
         *,
         repo: "RiskLockEventsRepository | None" = None,
         events_repo: EventsRepository | None = None,
+        time_provider: Callable[[], datetime] | None = None,
     ) -> None:
         self.repo = repo
         self.events_repo = events_repo
+        self.time_provider = time_provider or utc_now
         self._active: dict[str, RiskLockEvent] = {}
         self._history: OrderedDict[str, RiskLockEvent] = OrderedDict()
         self.recover()
@@ -64,7 +66,7 @@ class RiskLockManager:
         metrics_snapshot: dict[str, object] | None = None,
         metadata: dict[str, object] | None = None,
     ) -> RiskLockEvent:
-        now = utc_now()
+        now = self.time_provider()
         lock_key = self._build_lock_key(lock_type=lock_type, scope=scope, scope_key=scope_key)
         existing = self._active.get(lock_key)
         event = RiskLockEvent(
@@ -105,8 +107,9 @@ class RiskLockManager:
         existing = self._active.get(lock_key)
         if existing is None:
             return None
+        now = self.time_provider()
         cleared = RiskLockEvent(
-            event_id=self._build_event_id(lock_key, utc_now()),
+            event_id=self._build_event_id(lock_key, now),
             lock_key=lock_key,
             lock_type=existing.lock_type,
             scope=existing.scope,
@@ -116,7 +119,7 @@ class RiskLockManager:
             metrics_snapshot=existing.metrics_snapshot,
             is_active=False,
             triggered_at=existing.triggered_at,
-            released_at=utc_now(),
+            released_at=now,
             metadata=existing.metadata,
         )
         self._active.pop(lock_key, None)
@@ -133,7 +136,7 @@ class RiskLockManager:
         return cleared
 
     def list_current(self) -> list[RiskLockEvent]:
-        return sorted(self._active.values(), key=lambda item: item.triggered_at or utc_now(), reverse=True)
+        return sorted(self._active.values(), key=lambda item: item.triggered_at or self.time_provider(), reverse=True)
 
     def list_history(self, *, limit: int = 100) -> list[RiskLockEvent]:
         if self.repo is None:
