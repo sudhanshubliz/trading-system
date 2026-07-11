@@ -4,6 +4,9 @@ __pycache__/
 .pytest_cache/
 .venv/
 *.db
+*.db-journal
+*.db-shm
+*.db-wal
 *.egg-info/
 .m8_dump.txt
 .DS_Store
