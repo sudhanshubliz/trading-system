@@ -5,7 +5,10 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from app.market_data.types import Candle
+from app.signals.types import IndicatorSnapshot, TimeframeIndicatorSnapshot
 from app.signals.service import SignalService
+from app.strategies.base import StrategyContext
+from app.strategies.trend_follow import TrendFollowContinuationStrategy
 
 
 def _make_candles(
@@ -284,3 +287,404 @@ def test_signal_evaluation_short_side_allows_bearish_continuation_above_neutral_
     payload = response.json()
     assert payload["count"] >= 1
     assert any(item["side"] == "short" for item in payload["items"])
+
+
+def test_trend_follow_allows_marginal_pullback_and_range_when_structure_is_clean() -> None:
+    from app.config.settings import get_settings
+
+    settings = get_settings().model_copy(
+        update={
+            "signals_pullback_tolerance_pct": 0.007,
+            "signals_min_trigger_range_pct": 0.06,
+        }
+    )
+    base_time = datetime(2026, 4, 2, 12, 0, tzinfo=timezone.utc)
+    regime_candles = _make_candles(
+        count=80,
+        start_price=70000.0,
+        step=20.0,
+        start_time=base_time,
+        minutes=60,
+    )
+    setup_candles = _make_candles(
+        count=80,
+        start_price=71300.0,
+        step=2.0,
+        start_time=base_time,
+        minutes=15,
+    )
+    trigger_candles = _make_candles(
+        count=80,
+        start_price=71400.0,
+        step=1.0,
+        start_time=base_time,
+        minutes=5,
+        tail_steps=[-18.0, -14.0, -10.0, -6.0, -2.0, 3.0, 5.0, 7.0, 9.0, 11.0],
+    )
+    latest_close = trigger_candles[-1].close
+    indicators = IndicatorSnapshot(
+        timeframes={
+            settings.signals_regime_timeframe: TimeframeIndicatorSnapshot(
+                ema_fast=71450.0,
+                ema_slow=71350.0,
+                rsi=58.0,
+                vwap=71320.0,
+                macd=18.0,
+                macd_signal=12.0,
+                macd_hist=6.0,
+                latest_close=latest_close,
+                previous_close=trigger_candles[-2].close,
+                latest_volume=trigger_candles[-1].volume,
+                average_volume=180.0,
+                average_range_pct=0.07,
+            ),
+            settings.signals_setup_timeframe: TimeframeIndicatorSnapshot(
+                ema_fast=latest_close - 90.0,
+                ema_slow=latest_close - 120.0,
+                rsi=55.0,
+                vwap=latest_close / (1.0 + 0.0065),
+                macd=8.0,
+                macd_signal=5.0,
+                macd_hist=3.0,
+                latest_close=latest_close,
+                previous_close=trigger_candles[-2].close,
+                latest_volume=trigger_candles[-1].volume,
+                average_volume=180.0,
+                average_range_pct=0.07,
+            ),
+            settings.signals_trigger_timeframe: TimeframeIndicatorSnapshot(
+                ema_fast=latest_close - 10.0,
+                ema_slow=latest_close - 15.0,
+                rsi=58.0,
+                vwap=latest_close - 80.0,
+                macd=4.0,
+                macd_signal=2.0,
+                macd_hist=2.0,
+                latest_close=latest_close,
+                previous_close=trigger_candles[-2].close,
+                latest_volume=trigger_candles[-1].volume,
+                average_volume=180.0,
+                average_range_pct=0.07,
+            ),
+        }
+    )
+    context = StrategyContext(
+        symbol="BTCUSDT",
+        regime_candles=regime_candles,
+        setup_candles=setup_candles,
+        trigger_candles=trigger_candles,
+        indicators=indicators,
+        settings=settings,
+        generated_at=base_time + timedelta(hours=10),
+        signal_id_factory=lambda symbol, strategy, side, generated_at: f"{symbol}-{strategy}-{side}",
+    )
+
+    signal = TrendFollowContinuationStrategy().evaluate(context)
+
+    assert signal is not None
+    assert signal.side == "long"
+
+
+def test_trend_follow_allows_shallow_counter_color_trigger_when_continuation_is_strong() -> None:
+    from app.config.settings import get_settings
+
+    settings = get_settings().model_copy(
+        update={
+            "signals_pullback_tolerance_pct": 0.007,
+            "signals_min_trigger_range_pct": 0.06,
+            "signals_countertrend_trigger_body_to_range_ratio": 0.4,
+            "signals_countertrend_trigger_rsi_buffer": 5.0,
+            "signals_countertrend_trigger_min_regime_gap_pct": 0.0001,
+        }
+    )
+    base_time = datetime(2026, 4, 2, 12, 0, tzinfo=timezone.utc)
+    regime_candles = _make_candles(
+        count=80,
+        start_price=70000.0,
+        step=18.0,
+        start_time=base_time,
+        minutes=60,
+    )
+    setup_candles = _make_candles(
+        count=80,
+        start_price=71300.0,
+        step=2.0,
+        start_time=base_time,
+        minutes=15,
+    )
+    trigger_candles = _make_candles(
+        count=80,
+        start_price=71400.0,
+        step=1.0,
+        start_time=base_time,
+        minutes=5,
+        tail_steps=[-12.0, -8.0, -4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0],
+    )
+    latest = trigger_candles[-1]
+    counter_color_close = latest.open - 8.0
+    trigger_candles[-1] = Candle(
+        open_time=latest.open_time,
+        open=latest.open,
+        high=latest.high,
+        low=min(latest.low, counter_color_close - 2.0),
+        close=counter_color_close,
+        volume=latest.volume,
+        is_closed=True,
+    )
+    latest_close = trigger_candles[-1].close
+    indicators = IndicatorSnapshot(
+        timeframes={
+            settings.signals_regime_timeframe: TimeframeIndicatorSnapshot(
+                ema_fast=71480.0,
+                ema_slow=71360.0,
+                rsi=59.0,
+                vwap=71340.0,
+                macd=18.0,
+                macd_signal=11.0,
+                macd_hist=7.0,
+                latest_close=latest_close,
+                previous_close=trigger_candles[-2].close,
+                latest_volume=trigger_candles[-1].volume,
+                average_volume=180.0,
+                average_range_pct=0.08,
+            ),
+            settings.signals_setup_timeframe: TimeframeIndicatorSnapshot(
+                ema_fast=latest_close - 80.0,
+                ema_slow=latest_close - 120.0,
+                rsi=56.0,
+                vwap=latest_close / (1.0 + 0.0064),
+                macd=7.0,
+                macd_signal=4.0,
+                macd_hist=3.0,
+                latest_close=latest_close,
+                previous_close=trigger_candles[-2].close,
+                latest_volume=trigger_candles[-1].volume,
+                average_volume=180.0,
+                average_range_pct=0.08,
+            ),
+            settings.signals_trigger_timeframe: TimeframeIndicatorSnapshot(
+                ema_fast=latest_close - 12.0,
+                ema_slow=latest_close - 18.0,
+                rsi=58.0,
+                vwap=latest_close - 90.0,
+                macd=4.0,
+                macd_signal=2.5,
+                macd_hist=1.5,
+                latest_close=latest_close,
+                previous_close=trigger_candles[-2].close,
+                latest_volume=trigger_candles[-1].volume,
+                average_volume=180.0,
+                average_range_pct=0.08,
+            ),
+        }
+    )
+    context = StrategyContext(
+        symbol="BTCUSDT",
+        regime_candles=regime_candles,
+        setup_candles=setup_candles,
+        trigger_candles=trigger_candles,
+        indicators=indicators,
+        settings=settings,
+        generated_at=base_time + timedelta(hours=10),
+        signal_id_factory=lambda symbol, strategy, side, generated_at: f"{symbol}-{strategy}-{side}",
+    )
+
+    signal = TrendFollowContinuationStrategy().evaluate(context)
+
+    assert signal is not None
+    assert signal.side == "long"
+    assert any("counter-color" in line for line in signal.rationale)
+
+
+def test_trend_follow_allows_strong_regime_pullback_when_vwap_lags_fast_ema() -> None:
+    from app.config.settings import get_settings
+
+    settings = get_settings().model_copy(
+        update={
+            "signals_pullback_tolerance_pct": 0.007,
+            "signals_trend_pullback_vwap_slack_pct": 0.005,
+            "signals_trend_pullback_strong_regime_gap_pct": 0.002,
+        }
+    )
+    base_time = datetime(2026, 4, 2, 12, 0, tzinfo=timezone.utc)
+    regime_candles = _make_candles(
+        count=80,
+        start_price=70000.0,
+        step=24.0,
+        start_time=base_time,
+        minutes=60,
+    )
+    setup_candles = _make_candles(
+        count=80,
+        start_price=76800.0,
+        step=3.0,
+        start_time=base_time,
+        minutes=15,
+    )
+    trigger_candles = _make_candles(
+        count=80,
+        start_price=77000.0,
+        step=2.0,
+        start_time=base_time,
+        minutes=5,
+        tail_steps=[-12.0, -8.0, -4.0, 4.0, 6.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+    )
+    latest_close = trigger_candles[-1].close
+    indicators = IndicatorSnapshot(
+        timeframes={
+            settings.signals_regime_timeframe: TimeframeIndicatorSnapshot(
+                ema_fast=latest_close - 120.0,
+                ema_slow=latest_close - 305.0,
+                rsi=60.0,
+                vwap=latest_close - 220.0,
+                macd=19.0,
+                macd_signal=11.0,
+                macd_hist=8.0,
+                latest_close=latest_close,
+                previous_close=trigger_candles[-2].close,
+                latest_volume=trigger_candles[-1].volume,
+                average_volume=180.0,
+                average_range_pct=0.08,
+            ),
+            settings.signals_setup_timeframe: TimeframeIndicatorSnapshot(
+                ema_fast=latest_close - 90.0,
+                ema_slow=latest_close - 150.0,
+                rsi=57.0,
+                vwap=latest_close / (1.0 + 0.0115),
+                macd=8.0,
+                macd_signal=5.0,
+                macd_hist=3.0,
+                latest_close=latest_close,
+                previous_close=trigger_candles[-2].close,
+                latest_volume=trigger_candles[-1].volume,
+                average_volume=180.0,
+                average_range_pct=0.08,
+            ),
+            settings.signals_trigger_timeframe: TimeframeIndicatorSnapshot(
+                ema_fast=latest_close - 10.0,
+                ema_slow=latest_close - 16.0,
+                rsi=58.0,
+                vwap=latest_close - 70.0,
+                macd=4.0,
+                macd_signal=2.0,
+                macd_hist=2.0,
+                latest_close=latest_close,
+                previous_close=trigger_candles[-2].close,
+                latest_volume=trigger_candles[-1].volume,
+                average_volume=180.0,
+                average_range_pct=0.08,
+            ),
+        }
+    )
+    context = StrategyContext(
+        symbol="BTCUSDT",
+        regime_candles=regime_candles,
+        setup_candles=setup_candles,
+        trigger_candles=trigger_candles,
+        indicators=indicators,
+        settings=settings,
+        generated_at=base_time + timedelta(hours=10),
+        signal_id_factory=lambda symbol, strategy, side, generated_at: f"{symbol}-{strategy}-{side}",
+    )
+
+    signal = TrendFollowContinuationStrategy().evaluate(context)
+
+    assert signal is not None
+    assert signal.side == "long"
+    assert any("VWAP is lagging" in line for line in signal.rationale)
+
+
+def test_trend_follow_still_rejects_vwap_lag_when_regime_is_not_strong_enough() -> None:
+    from app.config.settings import get_settings
+
+    settings = get_settings().model_copy(
+        update={
+            "signals_pullback_tolerance_pct": 0.007,
+            "signals_trend_pullback_vwap_slack_pct": 0.005,
+            "signals_trend_pullback_strong_regime_gap_pct": 0.002,
+        }
+    )
+    base_time = datetime(2026, 4, 2, 12, 0, tzinfo=timezone.utc)
+    regime_candles = _make_candles(
+        count=80,
+        start_price=70000.0,
+        step=10.0,
+        start_time=base_time,
+        minutes=60,
+    )
+    setup_candles = _make_candles(
+        count=80,
+        start_price=76800.0,
+        step=3.0,
+        start_time=base_time,
+        minutes=15,
+    )
+    trigger_candles = _make_candles(
+        count=80,
+        start_price=77000.0,
+        step=2.0,
+        start_time=base_time,
+        minutes=5,
+        tail_steps=[-12.0, -8.0, -4.0, 4.0, 6.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+    )
+    latest_close = trigger_candles[-1].close
+    indicators = IndicatorSnapshot(
+        timeframes={
+            settings.signals_regime_timeframe: TimeframeIndicatorSnapshot(
+                ema_fast=latest_close - 85.0,
+                ema_slow=latest_close - 145.0,
+                rsi=56.0,
+                vwap=latest_close - 180.0,
+                macd=12.0,
+                macd_signal=8.0,
+                macd_hist=4.0,
+                latest_close=latest_close,
+                previous_close=trigger_candles[-2].close,
+                latest_volume=trigger_candles[-1].volume,
+                average_volume=180.0,
+                average_range_pct=0.08,
+            ),
+            settings.signals_setup_timeframe: TimeframeIndicatorSnapshot(
+                ema_fast=latest_close - 95.0,
+                ema_slow=latest_close - 145.0,
+                rsi=56.0,
+                vwap=latest_close / (1.0 + 0.0115),
+                macd=8.0,
+                macd_signal=5.0,
+                macd_hist=3.0,
+                latest_close=latest_close,
+                previous_close=trigger_candles[-2].close,
+                latest_volume=trigger_candles[-1].volume,
+                average_volume=180.0,
+                average_range_pct=0.08,
+            ),
+            settings.signals_trigger_timeframe: TimeframeIndicatorSnapshot(
+                ema_fast=latest_close - 10.0,
+                ema_slow=latest_close - 16.0,
+                rsi=58.0,
+                vwap=latest_close - 70.0,
+                macd=4.0,
+                macd_signal=2.0,
+                macd_hist=2.0,
+                latest_close=latest_close,
+                previous_close=trigger_candles[-2].close,
+                latest_volume=trigger_candles[-1].volume,
+                average_volume=180.0,
+                average_range_pct=0.08,
+            ),
+        }
+    )
+    context = StrategyContext(
+        symbol="BTCUSDT",
+        regime_candles=regime_candles,
+        setup_candles=setup_candles,
+        trigger_candles=trigger_candles,
+        indicators=indicators,
+        settings=settings,
+        generated_at=base_time + timedelta(hours=10),
+        signal_id_factory=lambda symbol, strategy, side, generated_at: f"{symbol}-{strategy}-{side}",
+    )
+
+    signal = TrendFollowContinuationStrategy().evaluate(context)
+
+    assert signal is None

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
-from app.replay.metrics import calculate_drawdown, calculate_expectancy
-from app.replay.types import EquityPoint, ReplayTradeResult
+from app.config.settings import get_settings
+from app.market_data.types import Candle
+from app.replay.engine import ReplayEngine, ReplayMarketDataService
+from app.replay.metrics import build_replay_metrics, calculate_drawdown, calculate_expectancy
+from app.replay.types import EquityPoint, ReplayRun, ReplayTradeResult
+from app.replay.walk_forward import build_walk_forward_report
 
 
 def _make_candles(
@@ -84,6 +89,26 @@ def _replay_payload() -> dict[str, object]:
     }
 
 
+def test_replay_exposes_completed_candles_only_at_close_boundary() -> None:
+    start = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    first = Candle(start, 100.0, 102.0, 99.0, 101.0, 10.0, True)
+    second = Candle(start + timedelta(minutes=5), 101.0, 110.0, 100.0, 109.0, 12.0, True)
+    source = {"BTCUSDT": {"5m": [first, second]}}
+    market_data = ReplayMarketDataService(source, {}, "5m")
+
+    market_data.set_time(start + timedelta(minutes=5))
+    visible_at_first_close = asyncio.run(market_data.get_candles("BTCUSDT", "5m"))
+    market_data.set_time(start + timedelta(minutes=10))
+    visible_at_second_close = asyncio.run(market_data.get_candles("BTCUSDT", "5m"))
+
+    assert visible_at_first_close == [first]
+    assert visible_at_second_close == [first, second]
+    assert ReplayEngine(get_settings())._build_events(source, ["BTCUSDT"]) == [
+        (start + timedelta(minutes=5), {"BTCUSDT"}),
+        (start + timedelta(minutes=10), {"BTCUSDT"}),
+    ]
+
+
 def test_replay_bullish_candles_produce_trade() -> None:
     from app.main import app
 
@@ -93,6 +118,8 @@ def test_replay_bullish_candles_produce_trade() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["metrics"]["total_trades"] >= 1
+    assert payload["metrics"]["fees_paid_total"] > 0
+    assert all(item["fees_paid"] > 0 for item in payload["trades"])
 
 
 def test_replay_empty_dataset_zero_safe() -> None:
@@ -180,5 +207,78 @@ def test_replay_metrics_endpoint_shape() -> None:
         "unrealized_pnl_final",
         "ending_balance",
         "equity_curve",
+        "gross_realized_pnl_total",
+        "fees_paid_total",
+        "slippage_cost_total",
+        "turnover_notional",
     ]:
         assert key in payload
+
+
+def test_walk_forward_report_requires_90_days_and_positive_folds() -> None:
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    end = start + timedelta(days=90)
+    pnls = [10.0, 10.0, -5.0]
+    trades = [
+        ReplayTradeResult(
+            trade_id=f"wf_trade_{index}",
+            position_id=f"wf_position_{index}",
+            symbol="BTCUSDT",
+            side="long",
+            strategy_name="trend_follow_continuation",
+            entry_price=100.0,
+            exit_price=110.0 if pnl > 0 else 95.0,
+            quantity=1.0,
+            opened_at=start + timedelta(days=(index * 30) + 10),
+            closed_at=start + timedelta(days=(index * 30) + 15),
+            realized_pnl=pnl,
+            exit_reason="target_2" if pnl > 0 else "stop_loss",
+            status="closed",
+            gross_realized_pnl=pnl + 1.0,
+            fees_paid=1.0,
+            slippage_cost=0.4,
+        )
+        for index, pnl in enumerate(pnls)
+    ]
+    equity_curve = [
+        EquityPoint(timestamp=start, equity=5000.0, realized_pnl=0.0, unrealized_pnl=0.0),
+        EquityPoint(timestamp=end, equity=5015.0, realized_pnl=15.0, unrealized_pnl=0.0),
+    ]
+    run = ReplayRun(
+        run_id="rpl_walk_forward",
+        status="completed",
+        symbols=["BTCUSDT"],
+        initial_balance=5000.0,
+        total_steps=100,
+        started_at=start,
+        completed_at=end,
+        trades=trades,
+        metrics=build_replay_metrics(initial_balance=5000.0, trades=trades, equity_curve=equity_curve),
+    )
+
+    report = build_walk_forward_report(
+        run,
+        start_time=start,
+        end_time=end,
+        fold_count=3,
+        minimum_days=90,
+        minimum_trades=3,
+        minimum_profit_factor=1.2,
+        maximum_drawdown_pct=25.0,
+    )
+    short_report = build_walk_forward_report(
+        run,
+        start_time=start,
+        end_time=end - timedelta(days=1),
+        fold_count=3,
+        minimum_days=90,
+        minimum_trades=3,
+        minimum_profit_factor=1.2,
+        maximum_drawdown_pct=25.0,
+    )
+
+    assert report.passed is True
+    assert report.positive_fold_count == 2
+    assert report.fees_paid == 3.0
+    assert short_report.passed is False
+    assert "minimum_evidence_days_not_met" in short_report.blockers

@@ -33,4 +33,7 @@ def build_pnl_summary(positions: list[Position], trades: list[Trade]) -> PnlSumm
         closed_positions=closed_positions,
         total_trades=len(trades),
         timestamp=now,
+        gross_realized_pnl_total=sum(position.gross_realized_pnl for position in positions),
+        fees_paid_total=sum(position.fees_paid for position in positions),
+        slippage_cost_total=sum(position.slippage_cost for position in positions),
     )

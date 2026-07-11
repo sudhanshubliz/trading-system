@@ -17,6 +17,13 @@ class PolymarketMarketResponse(BaseModel):
     no_price: float | None = None
     linked_group: str | None = None
     linked_rule: str | None = None
+    condition_id: str | None = None
+    yes_token_id: str | None = None
+    no_token_id: str | None = None
+    liquidity_usd: float | None = None
+    fees_enabled: bool = False
+    fee_rate: float = 0.0
+    source: str = "unknown"
     metadata: dict[str, object] = Field(default_factory=dict)
 
 
@@ -54,4 +61,3 @@ class PolymarketOpportunityResponse(BaseModel):
 class PolymarketOpportunityListResponse(BaseModel):
     items: list[PolymarketOpportunityResponse] = Field(default_factory=list)
     count: int
-

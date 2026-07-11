@@ -170,3 +170,26 @@ def check_cycle_throttle(passed: bool) -> RiskCheckResult:
         passed=passed,
         details=None if passed else "evaluation_cycle_limit_reached",
     )
+
+
+def check_net_edge_after_costs(
+    net_edge_bps: float,
+    *,
+    enabled: bool,
+    minimum_bps: float,
+) -> RiskCheckResult:
+    passed = not enabled or net_edge_bps >= minimum_bps
+    return RiskCheckResult(
+        name="net_edge_after_costs_passed",
+        passed=passed,
+        details=None if passed else "net_edge_after_costs_below_minimum",
+    )
+
+
+def check_turnover_cooldown(*, enabled: bool, passed: bool) -> RiskCheckResult:
+    effective_passed = not enabled or passed
+    return RiskCheckResult(
+        name="strategy_turnover_cooldown_passed",
+        passed=effective_passed,
+        details=None if effective_passed else "strategy_turnover_cooldown_active",
+    )

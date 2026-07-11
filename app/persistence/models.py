@@ -572,3 +572,37 @@ class MicrostructureFeatureSnapshotRecord(PersistenceBase):
     payload_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class StrategyOwnerCandidateRecord(PersistenceBase):
+    __tablename__ = "strategy_owner_candidates"
+
+    candidate_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_name: Mapped[str] = mapped_column(String(64), index=True)
+    strategy_family: Mapped[str] = mapped_column(String(64), index=True)
+    symbol_or_market: Mapped[str] = mapped_column(String(128), index=True)
+    direction: Mapped[str] = mapped_column(String(16), index=True)
+    overall_score: Mapped[float] = mapped_column(Float, index=True)
+    confidence: Mapped[float] = mapped_column(Float, index=True)
+    tradable: Mapped[str] = mapped_column(String(8), index=True)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class StrategyOwnerDecisionRecord(PersistenceBase):
+    __tablename__ = "strategy_owner_decisions"
+
+    decision_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    candidate_id: Mapped[str] = mapped_column(String(64), index=True)
+    source_name: Mapped[str] = mapped_column(String(64), index=True)
+    strategy_family: Mapped[str] = mapped_column(String(64), index=True)
+    symbol_or_market: Mapped[str] = mapped_column(String(128), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    overall_score: Mapped[float] = mapped_column(Float, index=True)
+    forwarded_to_risk: Mapped[str] = mapped_column(String(8), index=True)
+    rejection_reason: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

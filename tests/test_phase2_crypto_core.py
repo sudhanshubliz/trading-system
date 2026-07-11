@@ -426,6 +426,59 @@ def test_phase2_risk_locks_veto_trades_for_stale_thin_toxic_and_integrity_failur
     assert any(item["lock_type"] == "execution_anomaly_lock" for item in anomaly_assessment.active_risk_locks)
 
 
+def test_liquidity_lock_allows_spread_exactly_at_configured_limit() -> None:
+    class BoundarySpreadMarketDataService(FakePhase2MarketDataService):
+        async def get_order_book(self, symbol: str) -> OrderBookSnapshot:
+            book = await super().get_order_book(symbol)
+            midpoint = self.spot_5m[-1].close
+            half_spread = midpoint * (4.0 / 20000.0)
+            book.bids[0] = OrderBookLevel(price=midpoint - half_spread, quantity=2.0)
+            book.asks[0] = OrderBookLevel(price=midpoint + half_spread, quantity=2.0)
+            return book
+
+    settings = _settings(
+        microstructure_max_relative_spread_bps=4.0,
+        enable_stale_data_lock=False,
+        enable_volatility_shock_lock=False,
+        enable_execution_anomaly_lock=False,
+        enable_basis_data_integrity_lock=False,
+    )
+    market_data = BoundarySpreadMarketDataService()
+    risk_service = RiskService(
+        settings=settings,
+        market_data_service=market_data,
+        time_provider=lambda: market_data.now,
+        risk_lock_manager=RiskLockManager(time_provider=lambda: market_data.now),
+    )
+
+    assessment = asyncio.run(risk_service.validate_signal_payload(_candidate_payload(market_data.now)))
+
+    assert not any(item["lock_type"] == "liquidity_thin_lock" for item in assessment.active_risk_locks)
+
+
+def test_risk_lock_manager_uses_injected_replay_clock() -> None:
+    replay_now = datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc)
+    manager = RiskLockManager(time_provider=lambda: replay_now)
+
+    activated = manager.activate(
+        lock_type="stale_data_lock",
+        scope="symbol",
+        scope_key="BTCUSDT",
+        severity="high",
+        reason="test",
+    )
+    cleared = manager.clear(
+        lock_type="stale_data_lock",
+        scope="symbol",
+        scope_key="BTCUSDT",
+        reason="condition_cleared",
+    )
+
+    assert activated.triggered_at == replay_now
+    assert cleared is not None
+    assert cleared.released_at == replay_now
+
+
 def test_phase2_replay_outputs_artifacts_and_fidelity_notes() -> None:
     settings = _settings(signals_trigger_timeframe="5m")
     replay = ReplayService(settings=settings)
@@ -463,6 +516,8 @@ def test_phase2_replay_outputs_artifacts_and_fidelity_notes() -> None:
     assert run.metrics is not None
     assert run.phase2_artifacts["summary"]["basis_opportunity_count"] > 0
     assert run.phase2_artifacts["summary"]["microstructure_snapshot_count"] > 0
+    assert "active_risk_locks_at_end" in run.phase2_artifacts
+    assert "active_risk_lock_count_at_end" in run.phase2_artifacts["summary"]
     assert len(run.fidelity_notes) >= 3
 
 

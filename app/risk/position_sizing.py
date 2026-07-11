@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 
 def calculate_risk_amount(account_balance: float, max_risk_pct: float) -> float:
     if account_balance <= 0 or max_risk_pct <= 0:
@@ -27,6 +29,25 @@ def calculate_position_size(
     if risk_amount <= 0 or stop_distance_abs <= 0:
         return None
     return round(risk_amount / stop_distance_abs, precision)
+
+
+def cap_position_size_by_notional(
+    entry_price: float,
+    position_size: float | None,
+    max_notional_value: float,
+    *,
+    precision: int = 6,
+) -> float | None:
+    if entry_price <= 0 or position_size is None or position_size <= 0 or max_notional_value <= 0:
+        return position_size
+
+    current_notional = calculate_notional_value(entry_price, position_size)
+    if current_notional <= max_notional_value:
+        return position_size
+
+    scale = 10**precision
+    capped_size = math.floor((max_notional_value / entry_price) * scale) / scale
+    return round(capped_size, precision)
 
 
 def calculate_notional_value(entry_price: float, position_size: float) -> float:

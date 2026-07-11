@@ -172,14 +172,29 @@ class ResearchService:
         if dataset_type == "polymarket_markets" and self.polymarket_service is not None:
             await self.polymarket_service.refresh()
             return len(await self.polymarket_service.list_markets())
+        if dataset_type == "polymarket_snapshots" and self.polymarket_service is not None:
+            await self.polymarket_service.refresh()
+            markets = await self.polymarket_service.list_markets()
+            snapshot_count = 0
+            for market in markets[: self.settings.backfill_batch_size]:
+                order_book = await self.polymarket_service.get_orderbook(market.market_id)
+                if order_book is not None:
+                    snapshot_count += 1
+            return snapshot_count
         if dataset_type == "polymarket_opportunities" and self.polymarket_service is not None:
             return len(await self.polymarket_service.evaluate_opportunities())
         if dataset_type == "wallet_observations" and self.wallet_intel_service is not None:
             await self.wallet_intel_service.refresh()
             return len(self.wallet_intel_service.list_observations(limit=self.settings.backfill_batch_size))
+        if dataset_type == "wallet_signals" and self.wallet_intel_service is not None:
+            await self.wallet_intel_service.refresh()
+            return len(self.wallet_intel_service.list_signals(limit=self.settings.backfill_batch_size))
         if dataset_type == "event_observations" and self.event_signals_service is not None:
             await self.event_signals_service.refresh()
             return len(await self.event_signals_service.list_events())
+        if dataset_type == "event_signals" and self.event_signals_service is not None:
+            await self.event_signals_service.refresh()
+            return len(self.event_signals_service.list_signals(limit=self.settings.backfill_batch_size))
         raise ValueError(f"unsupported_backfill_dataset:{dataset_type}")
 
     def _upsert_backfill_job(self, item: BackfillJob) -> None:

@@ -35,12 +35,20 @@ class ShadowRunner:
         self.events_repo = events_repo
         self._task: asyncio.Task[None] | None = None
         self.running = False
+        self.started_at: datetime | None = None
+        self.stopped_at: datetime | None = None
+        self.cycle_count = 0
         self.last_cycle_at: datetime | None = None
         self.last_error: str | None = None
         self.blocked_reason: str | None = None
 
     async def start(self) -> None:
+        if self.running:
+            return
         self.running = True
+        self.started_at = utc_now()
+        self.stopped_at = None
+        self.cycle_count = 0
         self.last_error = None
         self.blocked_reason = None
         if self._task is None or self._task.done():
@@ -48,6 +56,7 @@ class ShadowRunner:
 
     async def stop(self) -> None:
         self.running = False
+        self.stopped_at = utc_now()
         if self._task is not None:
             self._task.cancel()
             self._task = None
@@ -57,6 +66,7 @@ class ShadowRunner:
         if not self.running:
             self.blocked_reason = "shadow_not_running"
             return
+        self.cycle_count += 1
         if self.execution_service.is_paused():
             self.blocked_reason = "global_pause"
             return

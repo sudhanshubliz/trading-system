@@ -18,7 +18,7 @@ from app.execution_quality.service import ExecutionQualityService
 from app.execution.pnl import build_pnl_summary
 from app.execution.positions import PositionManager
 from app.execution.types import Approval, ControlStatus, PnlSummary, Position, Trade
-from app.market_data.types import TickerSnapshot
+from app.market_data.types import OrderBookSnapshot, TickerSnapshot
 from app.persistence.repositories.approvals_repo import ApprovalsRepository
 from app.persistence.repositories.events_repo import EventsRepository
 from app.persistence.repositories.positions_repo import PositionsRepository
@@ -50,6 +50,7 @@ class ExecutionService:
         live_controller: object | None = None,
         portfolio_service: object | None = None,
         execution_quality_service: ExecutionQualityService | None = None,
+        provider_health_service: object | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.risk_service = risk_service
@@ -61,7 +62,10 @@ class ExecutionService:
         self.approvals = ApprovalStore(time_provider=self.time_provider)
         engine_settings = self.settings.model_copy(update={"execution_mode": self.execution_mode})
         self.engine = PaperExecutionEngine(engine_settings, time_provider=self.time_provider)
-        self.position_manager = PositionManager(time_provider=self.time_provider)
+        self.position_manager = PositionManager(
+            settings=engine_settings,
+            time_provider=self.time_provider,
+        )
         self._trades: dict[str, Trade] = {}
         self._positions: dict[str, Position] = {}
         self.approvals_repo = approvals_repo
@@ -71,6 +75,7 @@ class ExecutionService:
         self.live_controller = live_controller
         self.portfolio_service = portfolio_service
         self.execution_quality_service = execution_quality_service
+        self.provider_health_service = provider_health_service
         self.persistence_session_factory = (
             persistence_session_factory
             or (approvals_repo.session_factory if approvals_repo is not None else None)
@@ -144,7 +149,7 @@ class ExecutionService:
 
         if self.is_paused():
             raise ValueError("execution_paused")
-        if await self._trading_blocked_by_market_data():
+        if await self._trading_blocked_by_market_data(approval.symbol):
             raise ValueError("market_data_stale")
 
         assessment = self._get_assessment(approval.assessment_id)
@@ -158,12 +163,26 @@ class ExecutionService:
 
         latest_price = await self._get_latest_price(approved.symbol)
         current_snapshot = await self._get_market_snapshot(approved.symbol)
-        execution = self.engine.execute(
-            approved,
-            assessment,
-            latest_market_price=latest_price,
-            paused=False,
+        current_order_book = await self._get_order_book(approved.symbol)
+        provider_names = (
+            ["polymarket"]
+            if approved.symbol.upper().startswith("PM_")
+            else ["binance_spot_market_data", "binance_futures_market_data"]
         )
+        provider_health_status = self._resolve_provider_health_status(provider_names)
+        try:
+            execution = self.engine.execute(
+                approved,
+                assessment,
+                latest_market_price=latest_price,
+                snapshot=current_snapshot,
+                order_book=current_order_book,
+                paused=False,
+                provider_health_status=provider_health_status,
+            )
+        except Exception:
+            self.approvals.load_approval(original_approval)
+            raise
         trade = replace(execution.trade, execution_mode=self.execution_mode)
         position = replace(self.position_manager.open_position(execution.position), execution_mode=self.execution_mode)
 
@@ -219,7 +238,10 @@ class ExecutionService:
                 snapshot=current_snapshot,
                 mode=self.execution_mode,
                 execution_policy="simulation_only" if self.execution_mode in {"paper", "shadow"} else "market",
-                partial_fill_ratio=1.0,
+                partial_fill_ratio=float(execution.execution_details.get("partial_fill_ratio", 1.0)),
+                submit_timestamp=execution.execution_details.get("submit_timestamp"),
+                fill_timestamp=execution.execution_details.get("fill_timestamp"),
+                execution_details=execution.execution_details,
             )
         log_structured_event(
             logger,
@@ -238,6 +260,7 @@ class ExecutionService:
         rejected = replace(rejected, execution_mode=self.execution_mode)
         self.approvals.load_approval(rejected)
         self._persist_approval(rejected, event_type="approval_received")
+        self._release_risk_reservation(rejected.assessment_id)
         return rejected
 
     async def list_approvals(self) -> list[Approval]:
@@ -267,6 +290,12 @@ class ExecutionService:
         await self.sync_positions_with_market()
         trades = list(self._trades.values())
         trades.sort(key=lambda item: item.opened_at, reverse=True)
+        return [replace(trade) for trade in trades]
+
+    def snapshot_recorded_trades(self) -> list[Trade]:
+        if self.trades_repo is not None:
+            return self.trades_repo.list_trades(self.execution_mode)
+        trades = sorted(self._trades.values(), key=lambda item: item.opened_at, reverse=True)
         return [replace(trade) for trade in trades]
 
     async def get_trade(self, trade_id: str) -> Trade | None:
@@ -421,7 +450,23 @@ class ExecutionService:
             return TickerSnapshot(symbol=symbol.upper(), **snapshot)
         return snapshot
 
-    async def _trading_blocked_by_market_data(self) -> bool:
+    async def _get_order_book(self, symbol: str) -> OrderBookSnapshot | None:
+        market_data_service = self.market_data_service
+        if market_data_service is None:
+            return None
+        get_order_book = getattr(market_data_service, "get_order_book", None)
+        if get_order_book is None:
+            return None
+        order_book = get_order_book(symbol)
+        if hasattr(order_book, "__await__"):
+            order_book = await order_book
+        if order_book is None:
+            return None
+        if isinstance(order_book, OrderBookSnapshot):
+            return order_book
+        return order_book
+
+    async def _trading_blocked_by_market_data(self, symbol: str | None = None) -> bool:
         if not self.settings.stale_market_data_blocks_trading:
             return False
         market_data_service = self.market_data_service
@@ -431,15 +476,18 @@ class ExecutionService:
         if get_health is None:
             return False
         try:
-            health = get_health()
+            try:
+                health = get_health(symbol=symbol)
+            except TypeError:
+                health = get_health()
             if hasattr(health, "__await__"):
                 health = await health
         except Exception:
             logger.exception("market data health check failed")
             return True
         if isinstance(health, dict):
-            return health.get("status") != "ok"
-        return getattr(health, "status", None) != "ok"
+            return health.get("status") not in {"ok", "healthy"}
+        return getattr(health, "status", None) not in {"ok", "healthy"}
 
     def _get_assessment(self, assessment_id: str) -> RiskAssessment | None:
         risk_service = self.risk_service
@@ -449,6 +497,26 @@ class ExecutionService:
         if get_assessment is None:
             return None
         return get_assessment(assessment_id)
+
+    def _resolve_provider_health_status(self, provider_names: list[str]) -> str | None:
+        provider_health_service = self.provider_health_service
+        if provider_health_service is None or not hasattr(provider_health_service, "get_provider"):
+            return None
+        statuses: list[str] = []
+        for provider_name in provider_names:
+            snapshot = provider_health_service.get_provider(provider_name)
+            if snapshot is None:
+                continue
+            status = getattr(snapshot, "status", None)
+            if status is not None:
+                statuses.append(str(status))
+        if not statuses:
+            return None
+        if "unhealthy" in statuses:
+            return "unhealthy"
+        if "degraded" in statuses:
+            return "degraded"
+        return "healthy"
 
     def _get_or_restore_approval(self, approval_id: str) -> Approval | None:
         approval = self.approvals.get(approval_id)
@@ -486,6 +554,7 @@ class ExecutionService:
                 self.positions_repo.upsert_position(position, session=session)
                 self._append_close_events(session=session, previous_position=previous_position, position=position, trade=trade)
         if previous_position.status != position.status and position.status == "closed":
+            self._release_risk_reservation(position.assessment_id)
             event_type = "trade_closed"
             if position.close_reason == "stop_loss":
                 event_type = "stop_loss_hit"
@@ -499,6 +568,11 @@ class ExecutionService:
                 close_reason=position.close_reason,
                 execution_mode=self.execution_mode,
             )
+
+    def _release_risk_reservation(self, assessment_id: str) -> None:
+        release = getattr(self.risk_service, "release_assessment_reservation", None)
+        if release is not None:
+            release(assessment_id)
 
     def _append_close_events(self, *, session: Session, previous_position: Position, position: Position, trade: Trade) -> None:
         if previous_position.status == position.status or position.status != "closed":

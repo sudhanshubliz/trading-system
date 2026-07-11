@@ -169,6 +169,45 @@ class PromotionService:
             return self.repo.list_reviews(limit=limit)
         return []
 
+    def get_blockers(self, strategy_name: str) -> dict[str, object]:
+        status = self.evaluate_strategy_for_promotion(strategy_name)
+        blockers: list[str] = []
+        if status.sample_count < self.settings.promotion_min_sample_count:
+            blockers.append("insufficient_sample_size")
+        if status.net_expectancy_after_costs < self.settings.promotion_min_expectancy:
+            blockers.append("expectancy_below_threshold")
+        if status.drawdown > self.settings.promotion_max_drawdown:
+            blockers.append("drawdown_above_threshold")
+        if status.execution_quality_avg < self.settings.promotion_min_execution_quality:
+            blockers.append("execution_quality_below_threshold")
+        if status.provider_health_score < self.settings.promotion_min_provider_health:
+            blockers.append("provider_health_below_threshold")
+        if status.incident_count > 0:
+            blockers.append("critical_incidents_present")
+        return {
+            "strategy_name": strategy_name,
+            "current_stage": status.current_stage,
+            "eligible": status.eligible_for_promotion,
+            "blockers": blockers,
+            "explanation": status.promotion_explanation,
+        }
+
+    def get_evidence(self, strategy_name: str) -> dict[str, object]:
+        status = self.evaluate_strategy_for_promotion(strategy_name)
+        quality_records = self.execution_quality_service.list_records(strategy_name=strategy_name, limit=50) if self.execution_quality_service is not None else []
+        strategy_trades = []
+        if self.trades_repo is not None and hasattr(self.trades_repo, "list_trades"):
+            strategy_trades = [trade for trade in self.trades_repo.list_trades("paper") if trade.strategy_name == strategy_name][:50]
+        latest_review = next((item for item in self.list_reviews(limit=100) if item.strategy_name == strategy_name), None)
+        return {
+            "strategy_name": strategy_name,
+            "status": status,
+            "recent_execution_quality": quality_records,
+            "recent_trades": strategy_trades,
+            "latest_review": latest_review,
+            "recommendation": self.recommend_stage_change(strategy_name),
+        }
+
     def _build_id(self, strategy_name: str) -> str:
         digest = hashlib.sha1(f"{strategy_name}|{utc_now().isoformat()}".encode("utf-8")).hexdigest()
         return f"prv_{digest[:12]}"

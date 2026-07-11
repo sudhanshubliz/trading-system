@@ -21,6 +21,13 @@ class Candle:
     is_closed: bool
 
 
+@dataclass(slots=True, frozen=True)
+class PricePoint:
+    symbol: str
+    price: float
+    timestamp: datetime
+
+
 @dataclass(slots=True)
 class OrderBookTop:
     symbol: str

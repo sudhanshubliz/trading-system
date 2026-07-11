@@ -4,7 +4,7 @@ from collections import deque
 from dataclasses import replace
 from datetime import datetime
 
-from app.market_data.types import Candle, FundingRatePoint, FundingSnapshot, OrderBookLevel, OrderBookSnapshot, OrderBookTop, TickerSnapshot, TradePrint
+from app.market_data.types import Candle, FundingRatePoint, FundingSnapshot, OrderBookLevel, OrderBookSnapshot, OrderBookTop, PricePoint, TickerSnapshot, TradePrint
 
 
 def _calculate_spread_bps(bid_price: float | None, ask_price: float | None) -> float | None:
@@ -116,6 +116,29 @@ class TradePrintCache:
         if limit is not None:
             items = items[-max(limit, 0) :]
         return [replace(item) for item in items]
+
+
+class PriceHistoryCache:
+    def __init__(self, limit: int = 600, minimum_interval_ms: int = 250) -> None:
+        self._limit = max(limit, 2)
+        self._minimum_interval_ms = max(minimum_interval_ms, 0)
+        self._store: dict[str, deque[PricePoint]] = {}
+
+    def upsert(self, point: PricePoint) -> None:
+        symbol = point.symbol.upper()
+        bucket = self._store.setdefault(symbol, deque(maxlen=self._limit))
+        if bucket:
+            elapsed_ms = (point.timestamp - bucket[-1].timestamp).total_seconds() * 1000.0
+            if elapsed_ms < self._minimum_interval_ms:
+                bucket[-1] = point
+                return
+        bucket.append(point)
+
+    def get(self, symbol: str, *, since: datetime | None = None) -> list[PricePoint]:
+        items = list(self._store.get(symbol.upper(), ()))
+        if since is not None:
+            items = [item for item in items if item.timestamp >= since]
+        return items
 
 
 class FundingCache:

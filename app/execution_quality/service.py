@@ -43,7 +43,9 @@ class ExecutionQualityService:
         fill_timestamp: datetime | None = None,
         partial_fill_ratio: float = 1.0,
         notes: list[str] | None = None,
+        execution_details: dict[str, object] | None = None,
     ) -> ExecutionQualityRecordData:
+        execution_details = execution_details or {}
         decision_timestamp = approval.approved_at if approval is not None else assessment.assessed_at if assessment is not None else None
         submit_timestamp = submit_timestamp or trade.opened_at
         fill_timestamp = fill_timestamp or trade.opened_at
@@ -54,23 +56,35 @@ class ExecutionQualityService:
         elif snapshot is not None:
             arrival_mid = snapshot.last_price
         actual_fill = trade.execution_price
-        expected_slippage_bps = min(
+        expected_slippage_bps = float(execution_details.get("expected_slippage_bps") or min(
             self.settings.execution_max_expected_slippage_bps,
             self.settings.max_slippage_pct * 100,
-        )
-        reference_price = intended_price or arrival_mid or actual_fill or 0.0
-        realized_slippage_bps = None
-        if actual_fill is not None and reference_price:
+        ))
+        expected_price = _as_float(execution_details.get("expected_price")) or intended_price or arrival_mid or actual_fill
+        reference_price = expected_price or actual_fill or 0.0
+        realized_slippage_bps = _as_float(execution_details.get("realized_slippage_bps"))
+        if realized_slippage_bps is None and actual_fill is not None and reference_price:
             realized_slippage_bps = abs((actual_fill - reference_price) / reference_price) * 10000
-        latency_ms = None
-        if decision_timestamp is not None and fill_timestamp is not None:
+        decision_to_order_latency_ms = _as_float(execution_details.get("decision_to_order_latency_ms"))
+        order_to_fill_latency_ms = _as_float(execution_details.get("order_to_fill_latency_ms"))
+        total_latency_ms = _as_float(execution_details.get("total_latency_ms"))
+        latency_ms = total_latency_ms
+        if latency_ms is None and decision_timestamp is not None and fill_timestamp is not None:
             latency_ms = max(0.0, (fill_timestamp - decision_timestamp).total_seconds() * 1000.0)
+        slippage_bps = _as_float(execution_details.get("slippage_bps")) or realized_slippage_bps
+        liquidity_used_pct = _as_float(execution_details.get("liquidity_used_pct"))
+        stale_data_flag = bool(execution_details.get("stale_data_flag", False))
+        provider_health_at_execution = execution_details.get("provider_health_at_execution")
+        combined_notes = list(notes or [])
+        combined_notes.extend(str(item) for item in execution_details.get("notes", []) if str(item) not in combined_notes)
         quality_score = self._score(
             expected_slippage_bps=expected_slippage_bps,
             realized_slippage_bps=realized_slippage_bps,
             latency_ms=latency_ms,
             partial_fill_ratio=partial_fill_ratio,
             snapshot=snapshot,
+            stale_data_flag=stale_data_flag,
+            provider_health_at_execution=str(provider_health_at_execution) if provider_health_at_execution is not None else None,
         )
         record = ExecutionQualityRecordData(
             record_id=self._build_id(trade.trade_id, fill_timestamp or trade.opened_at),
@@ -90,10 +104,26 @@ class ExecutionQualityService:
             expected_slippage_bps=round(expected_slippage_bps, 6) if expected_slippage_bps is not None else None,
             realized_slippage_bps=round(realized_slippage_bps, 6) if realized_slippage_bps is not None else None,
             latency_ms=round(latency_ms, 6) if latency_ms is not None else None,
+            decision_to_order_latency_ms=round(decision_to_order_latency_ms, 6) if decision_to_order_latency_ms is not None else None,
+            order_to_fill_latency_ms=round(order_to_fill_latency_ms, 6) if order_to_fill_latency_ms is not None else None,
+            total_latency_ms=round(total_latency_ms, 6) if total_latency_ms is not None else round(latency_ms, 6) if latency_ms is not None else None,
+            expected_price=round(expected_price, 6) if expected_price is not None else None,
+            simulated_fill_price=round(actual_fill, 6) if actual_fill is not None else None,
+            slippage_bps=round(slippage_bps, 6) if slippage_bps is not None else None,
+            liquidity_used_pct=round(liquidity_used_pct, 6) if liquidity_used_pct is not None else None,
+            stale_data_flag=stale_data_flag,
+            provider_health_at_execution=str(provider_health_at_execution) if provider_health_at_execution is not None else None,
             partial_fill_ratio=round(partial_fill_ratio, 6),
             fill_quality_score=round(quality_score, 6),
-            notes=notes or [],
-            explanation=self._explanation(quality_score, realized_slippage_bps, latency_ms, partial_fill_ratio),
+            notes=combined_notes,
+            explanation=self._explanation(
+                quality_score,
+                realized_slippage_bps,
+                latency_ms,
+                partial_fill_ratio,
+                stale_data_flag=stale_data_flag,
+                provider_health_at_execution=str(provider_health_at_execution) if provider_health_at_execution is not None else None,
+            ),
             recorded_at=fill_timestamp or trade.opened_at,
         )
         if self.repo is not None:
@@ -196,6 +226,8 @@ class ExecutionQualityService:
         latency_ms: float | None,
         partial_fill_ratio: float,
         snapshot: TickerSnapshot | None,
+        stale_data_flag: bool,
+        provider_health_at_execution: str | None,
     ) -> float:
         score = 1.0
         if expected_slippage_bps is not None and realized_slippage_bps is not None and expected_slippage_bps > 0:
@@ -209,14 +241,39 @@ class ExecutionQualityService:
         score -= max(0.0, 1.0 - partial_fill_ratio) * 0.25
         if snapshot is not None and (snapshot.spread_bps or 0.0) > self.settings.microstructure_max_relative_spread_bps:
             score -= 0.1
+        if stale_data_flag:
+            score -= 0.2
+        if provider_health_at_execution == "degraded":
+            score -= 0.08
+        if provider_health_at_execution == "unhealthy":
+            score -= 0.2
         return max(0.0, min(1.0, score))
 
-    def _explanation(self, quality_score: float, realized_slippage_bps: float | None, latency_ms: float | None, partial_fill_ratio: float) -> str:
+    def _explanation(
+        self,
+        quality_score: float,
+        realized_slippage_bps: float | None,
+        latency_ms: float | None,
+        partial_fill_ratio: float,
+        *,
+        stale_data_flag: bool,
+        provider_health_at_execution: str | None,
+    ) -> str:
         return (
             f"Quality={round(quality_score, 4)} with realized_slippage_bps={round(realized_slippage_bps, 4) if realized_slippage_bps is not None else None}, "
-            f"latency_ms={round(latency_ms, 2) if latency_ms is not None else None}, partial_fill_ratio={round(partial_fill_ratio, 4)}."
+            f"latency_ms={round(latency_ms, 2) if latency_ms is not None else None}, partial_fill_ratio={round(partial_fill_ratio, 4)}, "
+            f"stale_data_flag={stale_data_flag}, provider_health={provider_health_at_execution}."
         )
 
     def _build_id(self, trade_id: str, timestamp: datetime) -> str:
         digest = hashlib.sha1(f"{trade_id}|{timestamp.isoformat()}".encode("utf-8")).hexdigest()
         return f"eqr_{digest[:12]}"
+
+
+def _as_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

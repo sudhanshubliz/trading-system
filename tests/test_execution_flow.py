@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.db.models import SystemState
 from app.db.session import SessionLocal
 from app.execution.service import ExecutionService
+from app.market_data.types import TickerSnapshot
 from app.risk.types import RiskAssessment, RiskCheckResult
 
 
@@ -15,8 +17,18 @@ class FakeMarketDataService:
     def __init__(self, prices: dict[str, float]) -> None:
         self.prices = prices
 
-    async def get_snapshot(self, symbol: str) -> dict[str, float | None]:
-        return {"last_price": self.prices.get(symbol.upper())}
+    async def get_snapshot(self, symbol: str) -> TickerSnapshot:
+        now = datetime.now(timezone.utc)
+        last_price = self.prices.get(symbol.upper())
+        return TickerSnapshot(
+            symbol=symbol.upper(),
+            last_price=last_price,
+            bid_price=last_price * 0.9999 if last_price is not None else None,
+            ask_price=last_price * 1.0001 if last_price is not None else None,
+            ticker_updated_at=now,
+            orderbook_updated_at=now,
+            snapshot_time=now,
+        )
 
     async def get_health(self) -> dict[str, str]:
         return {"status": "ok"}
@@ -183,10 +195,20 @@ def test_stop_loss_auto_close() -> None:
         client.post(f"/api/v1/approvals/{approval_id}/approve")
         market_data.prices["BTCUSDT"] = 94.0
         positions_response = client.get("/api/v1/positions")
+        market_data.prices["BTCUSDT"] = 120.0
+        closed_position_response = client.get("/api/v1/positions")
 
     position = positions_response.json()["items"][0]
+    closed_position = closed_position_response.json()["items"][0]
     assert position["status"] == "closed"
     assert position["close_reason"] == "stop_loss"
+    assert position["current_price"] < position["stop_loss"]
+    assert closed_position["current_price"] == position["current_price"]
+    assert position["fees_paid"] > 0
+    assert position["slippage_cost"] > 0
+    assert position["realized_pnl"] == pytest.approx(
+        position["gross_realized_pnl"] - position["fees_paid"],
+    )
 
 
 def test_target_hit_updates_pnl() -> None:

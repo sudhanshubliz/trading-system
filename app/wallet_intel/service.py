@@ -181,6 +181,9 @@ class WalletIntelService:
         timing_score = self.score_timing_quality(trades)
         sizing_score = self.score_sizing_discipline(trades)
         persistence_score = self.score_persistence(first_seen, last_seen, len(trades))
+        drawdown_score = self.score_drawdown_discipline(trades)
+        specialization_score = self.score_market_specialization(trades)
+        suspicious_flags = self.detect_suspicious_behavior(trades)
         concentration_score = min(1.0, len({trade.get("market") for trade in trades}) / max(len(trades), 1))
         crowding_score = self.score_crowding_risk(trades)
         quality = self.score_overall_quality(
@@ -190,6 +193,8 @@ class WalletIntelService:
             sizing_score=sizing_score,
             persistence_score=persistence_score,
             crowding_score=crowding_score,
+            drawdown_score=drawdown_score,
+            specialization_score=specialization_score,
         )
         return WalletProfile(
             wallet_id=normalized_id,
@@ -206,8 +211,13 @@ class WalletIntelService:
             crowding_score=crowding_score,
             persistence_score=persistence_score,
             quality_score=quality,
-            notes=[],
-            metadata=dict(raw.get("metadata", {})) if isinstance(raw.get("metadata"), dict) else {},
+            notes=[f"suspicious_flags={','.join(suspicious_flags)}"] if suspicious_flags else [],
+            metadata={
+                **(dict(raw.get("metadata", {})) if isinstance(raw.get("metadata"), dict) else {}),
+                "drawdown_score": round(drawdown_score, 6),
+                "specialization_score": round(specialization_score, 6),
+                "suspicious_flags": suspicious_flags,
+            },
         )
 
     async def _build_observations(self, wallet_id: str) -> list[WalletObservation]:
@@ -240,7 +250,10 @@ class WalletIntelService:
         latest = observations[0]
         recommended_action = "monitor_only"
         direction = latest.inferred_direction
-        if profile.quality_score >= self.settings.wallet_min_quality_score and profile.crowding_score <= self.settings.wallet_max_crowding_score:
+        suspicious_flags = list(profile.metadata.get("suspicious_flags", [])) if isinstance(profile.metadata, dict) else []
+        if suspicious_flags:
+            recommended_action = "ignore"
+        elif profile.quality_score >= self.settings.wallet_min_quality_score and profile.crowding_score <= self.settings.wallet_max_crowding_score:
             recommended_action = "follow" if self.settings.wallet_signal_mode in {"follow", "hybrid"} else "ignore"
         elif profile.crowding_score > self.settings.wallet_max_crowding_score:
             recommended_action = "fade" if self.settings.wallet_signal_mode in {"fade", "hybrid"} else "ignore"
@@ -253,11 +266,15 @@ class WalletIntelService:
             timestamp=latest.observed_at,
             direction=direction,
             confidence=round(confidence, 6),
-            rationale=[f"wallet_quality={round(profile.quality_score, 4)}", f"crowding={round(profile.crowding_score, 4)}"],
+            rationale=[
+                f"wallet_quality={round(profile.quality_score, 4)}",
+                f"crowding={round(profile.crowding_score, 4)}",
+                "independent_edge_required=true",
+            ],
             quality_score_snapshot=profile.quality_score,
             crowding_risk=profile.crowding_score,
             recommended_action=recommended_action,
-            metadata={"provider": profile.provider},
+            metadata={"provider": profile.provider, "independent_confirmation_required": True, "suspicious_flags": suspicious_flags},
         )
 
     def score_persistence(self, first_seen: datetime, last_seen: datetime, trade_count: int) -> float:
@@ -282,6 +299,41 @@ class WalletIntelService:
         markets = [str(item.get("market")) for item in trades]
         return max(markets.count(market) for market in set(markets)) / len(markets)
 
+    def score_drawdown_discipline(self, trades: list[dict[str, object]]) -> float:
+        if not trades:
+            return 0.0
+        pnl_path = [float(item.get("pnl", 0.0)) for item in trades]
+        running = 0.0
+        peak = 0.0
+        drawdown = 0.0
+        for pnl in pnl_path:
+            running += pnl
+            peak = max(peak, running)
+            drawdown = min(drawdown, running - peak)
+        return max(0.0, min(1.0, 1.0 - abs(drawdown) / max(abs(peak) + 1.0, 25.0)))
+
+    def score_market_specialization(self, trades: list[dict[str, object]]) -> float:
+        if not trades:
+            return 0.0
+        categories = [str(item.get("market_type", item.get("market", "unknown"))).split(":")[0] for item in trades]
+        dominant = max(categories.count(item) for item in set(categories))
+        return dominant / len(categories)
+
+    def detect_suspicious_behavior(self, trades: list[dict[str, object]]) -> list[str]:
+        flags: list[str] = []
+        if not trades:
+            return flags
+        large_count = len([item for item in trades if str(item.get("size", "medium")) == "large"])
+        if large_count / len(trades) > 0.6:
+            flags.append("oversized_repetition")
+        latency_values = [float(item.get("latency_seconds", 0.0)) for item in trades if item.get("latency_seconds") is not None]
+        if latency_values and min(latency_values) < 1.0:
+            flags.append("suspicious_low_latency_copy")
+        associated_events = [str(item.get("associated_event")) for item in trades if item.get("associated_event")]
+        if associated_events and len(set(associated_events)) == 1 and len(trades) >= 8:
+            flags.append("single_event_overconcentration")
+        return flags
+
     def score_overall_quality(
         self,
         *,
@@ -291,8 +343,18 @@ class WalletIntelService:
         sizing_score: float,
         persistence_score: float,
         crowding_score: float,
+        drawdown_score: float,
+        specialization_score: float,
     ) -> float:
-        score = (hit_rate * 0.25) + (pnl_score * 0.2) + (timing_score * 0.2) + (sizing_score * 0.15) + (persistence_score * 0.2)
+        score = (
+            (hit_rate * 0.2)
+            + (pnl_score * 0.18)
+            + (timing_score * 0.18)
+            + (sizing_score * 0.12)
+            + (persistence_score * 0.14)
+            + (drawdown_score * 0.1)
+            + (specialization_score * 0.08)
+        )
         return max(0.0, min(1.0, score - crowding_score * 0.15))
 
     def _store_observation(self, observation: WalletObservation) -> None:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Any
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, DotEnvSettingsSource, EnvSettingsSource, SettingsConfigDict
 
 
@@ -19,6 +20,18 @@ def _split_csv(value: str | list[str] | tuple[str, ...], *, upper: bool = False)
 
 
 class Settings(BaseSettings):
+    def __init__(self, **values: Any) -> None:
+        # pydantic-settings resolves environment aliases before field-name inputs.
+        # Normalize the three compatibility fields so explicit programmatic values win.
+        for field_name, alias in (
+            ("polymarket_provider_mode", "POLYMARKET_PROVIDER_MODE"),
+            ("wallet_provider_mode", "WALLET_PROVIDER_MODE"),
+            ("event_provider_mode", "EVENT_PROVIDER_MODE"),
+        ):
+            if field_name in values and alias not in values:
+                values[alias] = values.pop(field_name)
+        super().__init__(**values)
+
     app_env: str = Field(default="development", alias="APP_ENV")
     app_name: str = Field(default="trading-system", alias="APP_NAME")
     app_version: str = Field(default="0.1.0", alias="APP_VERSION")
@@ -64,6 +77,7 @@ class Settings(BaseSettings):
     market_data_candle_limit: int = Field(default=300, alias="MARKET_DATA_CANDLE_LIMIT")
     market_data_orderbook_limit: int = Field(default=5, alias="MARKET_DATA_ORDERBOOK_LIMIT")
     market_data_trade_cache_limit: int = Field(default=200, alias="MARKET_DATA_TRADE_CACHE_LIMIT")
+    market_data_price_history_limit: int = Field(default=1200, alias="MARKET_DATA_PRICE_HISTORY_LIMIT")
     market_data_funding_cache_limit: int = Field(default=128, alias="MARKET_DATA_FUNDING_CACHE_LIMIT")
     signals_enabled: bool = Field(default=True, alias="SIGNALS_ENABLED")
     signals_supported_symbols: list[str] = Field(
@@ -75,13 +89,33 @@ class Settings(BaseSettings):
     signals_trigger_timeframe: str = Field(default="5m", alias="SIGNALS_TRIGGER_TIMEFRAME")
     signals_min_candle_count: int = Field(default=60, alias="SIGNALS_MIN_CANDLE_COUNT")
     signals_store_limit: int = Field(default=200, alias="SIGNALS_STORE_LIMIT")
-    signals_pullback_tolerance_pct: float = Field(default=0.006, alias="SIGNALS_PULLBACK_TOLERANCE_PCT")
-    signals_min_trigger_range_pct: float = Field(default=0.08, alias="SIGNALS_MIN_TRIGGER_RANGE_PCT")
+    signals_pullback_tolerance_pct: float = Field(default=0.007, alias="SIGNALS_PULLBACK_TOLERANCE_PCT")
+    signals_min_trigger_range_pct: float = Field(default=0.06, alias="SIGNALS_MIN_TRIGGER_RANGE_PCT")
     signals_breakout_buffer_pct: float = Field(default=0.001, alias="SIGNALS_BREAKOUT_BUFFER_PCT")
     signals_rsi_long_min: float = Field(default=50.0, alias="SIGNALS_RSI_LONG_MIN")
     signals_rsi_long_max: float = Field(default=72.0, alias="SIGNALS_RSI_LONG_MAX")
     signals_rsi_short_min: float = Field(default=28.0, alias="SIGNALS_RSI_SHORT_MIN")
     signals_rsi_short_max: float = Field(default=60.0, alias="SIGNALS_RSI_SHORT_MAX")
+    signals_countertrend_trigger_body_to_range_ratio: float = Field(
+        default=0.35,
+        alias="SIGNALS_COUNTERTREND_TRIGGER_BODY_TO_RANGE_RATIO",
+    )
+    signals_countertrend_trigger_rsi_buffer: float = Field(
+        default=5.0,
+        alias="SIGNALS_COUNTERTREND_TRIGGER_RSI_BUFFER",
+    )
+    signals_countertrend_trigger_min_regime_gap_pct: float = Field(
+        default=0.0001,
+        alias="SIGNALS_COUNTERTREND_TRIGGER_MIN_REGIME_GAP_PCT",
+    )
+    signals_trend_pullback_vwap_slack_pct: float = Field(
+        default=0.005,
+        alias="SIGNALS_TREND_PULLBACK_VWAP_SLACK_PCT",
+    )
+    signals_trend_pullback_strong_regime_gap_pct: float = Field(
+        default=0.002,
+        alias="SIGNALS_TREND_PULLBACK_STRONG_REGIME_GAP_PCT",
+    )
     ema_fast_period: int = Field(default=20, alias="EMA_FAST_PERIOD")
     ema_slow_period: int = Field(default=50, alias="EMA_SLOW_PERIOD")
     rsi_period: int = Field(default=14, alias="RSI_PERIOD")
@@ -118,13 +152,21 @@ class Settings(BaseSettings):
     risk_engine_enabled: bool = Field(default=True, alias="RISK_ENGINE_ENABLED")
     paper_account_start_balance: float = Field(default=10000.0, alias="PAPER_ACCOUNT_START_BALANCE")
     max_risk_per_trade_pct: float = Field(default=2.0, alias="MAX_RISK_PER_TRADE_PCT")
+    paper_max_position_notional_pct_of_balance: float = Field(
+        default=100.0,
+        alias="PAPER_MAX_POSITION_NOTIONAL_PCT_OF_BALANCE",
+    )
     min_confidence_score: int = Field(default=65, alias="MIN_CONFIDENCE_SCORE")
     min_reward_risk_ratio: float = Field(default=1.5, alias="MIN_REWARD_RISK_RATIO")
     max_concurrent_positions: int = Field(default=3, alias="MAX_CONCURRENT_POSITIONS")
     max_open_risk_pct: float = Field(default=6.0, alias="MAX_OPEN_RISK_PCT")
     max_daily_drawdown_pct: float = Field(default=4.0, alias="MAX_DAILY_DRAWDOWN_PCT")
     max_weekly_drawdown_pct: float = Field(default=10.0, alias="MAX_WEEKLY_DRAWDOWN_PCT")
+    max_drawdown_from_ath_pct: float = Field(default=15.0, alias="MAX_DRAWDOWN_FROM_ATH_PCT")
     max_slippage_pct: float = Field(default=0.25, alias="MAX_SLIPPAGE_PCT")
+    enable_cost_aware_trade_filter: bool = Field(default=True, alias="ENABLE_COST_AWARE_TRADE_FILTER")
+    min_net_edge_after_costs_bps: float = Field(default=8.0, alias="MIN_NET_EDGE_AFTER_COSTS_BPS")
+    strategy_trade_cooldown_minutes: int = Field(default=240, alias="STRATEGY_TRADE_COOLDOWN_MINUTES")
     min_stop_distance_pct: float = Field(default=0.15, alias="MIN_STOP_DISTANCE_PCT")
     max_stop_distance_pct: float = Field(default=5.0, alias="MAX_STOP_DISTANCE_PCT")
     position_size_precision: int = Field(default=6, alias="POSITION_SIZE_PRECISION")
@@ -143,6 +185,10 @@ class Settings(BaseSettings):
     shadow_auto_approve: bool = Field(default=True, alias="SHADOW_AUTO_APPROVE")
     shadow_store_limit: int = Field(default=500, alias="SHADOW_STORE_LIMIT")
     shadow_cycle_interval_sec: int = Field(default=30, alias="SHADOW_CYCLE_INTERVAL_SEC")
+    shadow_min_evidence_days: int = Field(default=7, alias="SHADOW_MIN_EVIDENCE_DAYS")
+    shadow_min_closed_trades: int = Field(default=50, alias="SHADOW_MIN_CLOSED_TRADES")
+    shadow_min_profit_factor: float = Field(default=1.0, alias="SHADOW_MIN_PROFIT_FACTOR")
+    shadow_min_expectancy: float = Field(default=0.0, alias="SHADOW_MIN_EXPECTANCY")
     enable_live_trading: bool = Field(default=False, alias="ENABLE_LIVE_TRADING")
     live_trading_armed: bool = Field(default=False, alias="LIVE_TRADING_ARMED")
     live_execution_mode: str = Field(default="paper", alias="LIVE_EXECUTION_MODE")
@@ -223,6 +269,30 @@ class Settings(BaseSettings):
     )
     research_enabled: bool = Field(default=True, alias="RESEARCH_ENABLED")
     research_store_limit: int = Field(default=200, alias="RESEARCH_STORE_LIMIT")
+    strategy_owner_enabled: bool = Field(default=True, alias="STRATEGY_OWNER_ENABLED")
+    strategy_owner_store_limit: int = Field(default=300, alias="STRATEGY_OWNER_STORE_LIMIT")
+    strategy_owner_max_candidate_age_seconds: int = Field(default=300, alias="STRATEGY_OWNER_MAX_CANDIDATE_AGE_SECONDS")
+    strategy_owner_min_expected_value_bps: float = Field(default=4.0, alias="STRATEGY_OWNER_MIN_EXPECTED_VALUE_BPS")
+    strategy_owner_expected_value_ceiling_bps: float = Field(default=40.0, alias="STRATEGY_OWNER_EXPECTED_VALUE_CEILING_BPS")
+    strategy_owner_min_confidence: float = Field(default=0.52, alias="STRATEGY_OWNER_MIN_CONFIDENCE")
+    strategy_owner_min_liquidity_score: float = Field(default=0.4, alias="STRATEGY_OWNER_MIN_LIQUIDITY_SCORE")
+    strategy_owner_min_freshness_score: float = Field(default=0.35, alias="STRATEGY_OWNER_MIN_FRESHNESS_SCORE")
+    strategy_owner_min_execution_quality_score: float = Field(default=0.45, alias="STRATEGY_OWNER_MIN_EXECUTION_QUALITY_SCORE")
+    strategy_owner_min_provider_health_score: float = Field(default=0.4, alias="STRATEGY_OWNER_MIN_PROVIDER_HEALTH_SCORE")
+    strategy_owner_min_regime_score: float = Field(default=0.25, alias="STRATEGY_OWNER_MIN_REGIME_SCORE")
+    strategy_owner_min_exposure_score: float = Field(default=0.2, alias="STRATEGY_OWNER_MIN_EXPOSURE_SCORE")
+    strategy_owner_min_historical_performance_score: float = Field(default=0.25, alias="STRATEGY_OWNER_MIN_HISTORICAL_PERFORMANCE_SCORE")
+    strategy_owner_min_overall_score: float = Field(default=0.52, alias="STRATEGY_OWNER_MIN_OVERALL_SCORE")
+    strategy_owner_liquidity_depth_target_usd: float = Field(default=25000.0, alias="STRATEGY_OWNER_LIQUIDITY_DEPTH_TARGET_USD")
+    strategy_owner_weight_confidence: float = Field(default=0.14, alias="STRATEGY_OWNER_WEIGHT_CONFIDENCE")
+    strategy_owner_weight_expected_value: float = Field(default=0.18, alias="STRATEGY_OWNER_WEIGHT_EXPECTED_VALUE")
+    strategy_owner_weight_liquidity: float = Field(default=0.11, alias="STRATEGY_OWNER_WEIGHT_LIQUIDITY")
+    strategy_owner_weight_freshness: float = Field(default=0.10, alias="STRATEGY_OWNER_WEIGHT_FRESHNESS")
+    strategy_owner_weight_execution_quality: float = Field(default=0.10, alias="STRATEGY_OWNER_WEIGHT_EXECUTION_QUALITY")
+    strategy_owner_weight_provider_health: float = Field(default=0.10, alias="STRATEGY_OWNER_WEIGHT_PROVIDER_HEALTH")
+    strategy_owner_weight_regime: float = Field(default=0.09, alias="STRATEGY_OWNER_WEIGHT_REGIME")
+    strategy_owner_weight_exposure: float = Field(default=0.08, alias="STRATEGY_OWNER_WEIGHT_EXPOSURE")
+    strategy_owner_weight_historical_performance: float = Field(default=0.10, alias="STRATEGY_OWNER_WEIGHT_HISTORICAL_PERFORMANCE")
     promotion_min_sample_count: int = Field(default=50, alias="PROMOTION_MIN_SAMPLE_COUNT")
     promotion_min_expectancy: float = Field(default=0.05, alias="PROMOTION_MIN_EXPECTANCY")
     promotion_max_drawdown_pct: float = Field(default=8.0, alias="PROMOTION_MAX_DRAWDOWN_PCT")
@@ -245,13 +315,29 @@ class Settings(BaseSettings):
     mirofish_adapter_path: str = Field(default="", alias="MIROFISH_ADAPTER_PATH")
     mirofish_timeout_ms: int = Field(default=1000, alias="MIROFISH_TIMEOUT_MS")
     mirofish_max_data_age_seconds: int = Field(default=120, alias="MIROFISH_MAX_DATA_AGE_SECONDS")
+    mirofish_max_future_clock_skew_seconds: int = Field(default=30, alias="MIROFISH_MAX_FUTURE_CLOCK_SKEW_SECONDS")
+    mirofish_max_scenario_confidence: float = Field(default=0.5, alias="MIROFISH_MAX_SCENARIO_CONFIDENCE")
     polymarket_provider_enabled: bool = Field(default=False, alias="POLYMARKET_PROVIDER_ENABLED")
     enable_polymarket_engine: bool = Field(default=True, alias="ENABLE_POLYMARKET_ENGINE")
     polymarket_provider: str = Field(default="mock", alias="POLYMARKET_PROVIDER")
-    polymarket_provider_mode: str = Field(default="mock", alias="POLYMARKET_PROVIDER_MODE")
+    polymarket_provider_mode: str = Field(
+        default="mock",
+        validation_alias=AliasChoices("POLYMARKET_PROVIDER_MODE", "polymarket_provider_mode"),
+    )
     polymarket_api_base_url: str = Field(default="", alias="POLYMARKET_API_BASE_URL")
     polymarket_base_url: str = Field(default="https://gamma-api.polymarket.com", alias="POLYMARKET_BASE_URL")
+    polymarket_clob_base_url: str = Field(default="https://clob.polymarket.com", alias="POLYMARKET_CLOB_BASE_URL")
+    polymarket_data_base_url: str = Field(default="https://data-api.polymarket.com", alias="POLYMARKET_DATA_BASE_URL")
+    polymarket_ws_url: str = Field(
+        default="wss://ws-subscriptions-clob.polymarket.com/ws/market",
+        alias="POLYMARKET_WS_URL",
+    )
     polymarket_timeout_ms: int = Field(default=3000, alias="POLYMARKET_TIMEOUT_MS")
+    polymarket_market_limit: int = Field(default=500, alias="POLYMARKET_MARKET_LIMIT")
+    polymarket_book_depth_levels: int = Field(default=10, alias="POLYMARKET_BOOK_DEPTH_LEVELS")
+    polymarket_stream_enabled: bool = Field(default=True, alias="POLYMARKET_STREAM_ENABLED")
+    polymarket_stream_max_assets: int = Field(default=40, alias="POLYMARKET_STREAM_MAX_ASSETS")
+    polymarket_stream_stale_seconds: int = Field(default=15, alias="POLYMARKET_STREAM_STALE_SECONDS")
     polymarket_max_data_age_seconds: int = Field(default=180, alias="POLYMARKET_MAX_DATA_AGE_SECONDS")
     polymarket_min_net_edge_bps: float = Field(default=6.0, alias="POLYMARKET_MIN_NET_EDGE_BPS")
     polymarket_min_depth_usd: float = Field(default=5000.0, alias="POLYMARKET_MIN_DEPTH_USD")
@@ -259,7 +345,10 @@ class Settings(BaseSettings):
     wallet_provider_enabled: bool = Field(default=False, alias="WALLET_PROVIDER_ENABLED")
     enable_wallet_intel: bool = Field(default=True, alias="ENABLE_WALLET_INTEL")
     wallet_provider: str = Field(default="mock", alias="WALLET_PROVIDER")
-    wallet_provider_mode: str = Field(default="mock", alias="WALLET_PROVIDER_MODE")
+    wallet_provider_mode: str = Field(
+        default="mock",
+        validation_alias=AliasChoices("WALLET_PROVIDER_MODE", "wallet_provider_mode"),
+    )
     wallet_provider_base_url: str = Field(default="", alias="WALLET_PROVIDER_BASE_URL")
     wallet_provider_timeout_ms: int = Field(default=3000, alias="WALLET_PROVIDER_TIMEOUT_MS")
     wallet_max_data_age_seconds: int = Field(default=600, alias="WALLET_MAX_DATA_AGE_SECONDS")
@@ -271,7 +360,10 @@ class Settings(BaseSettings):
     event_provider_enabled: bool = Field(default=False, alias="EVENT_PROVIDER_ENABLED")
     enable_event_signals: bool = Field(default=True, alias="ENABLE_EVENT_SIGNALS")
     event_provider: str = Field(default="mock", alias="EVENT_PROVIDER")
-    event_provider_mode: str = Field(default="mock", alias="EVENT_PROVIDER_MODE")
+    event_provider_mode: str = Field(
+        default="mock",
+        validation_alias=AliasChoices("EVENT_PROVIDER_MODE", "event_provider_mode"),
+    )
     event_provider_timeout_ms: int = Field(default=3000, alias="EVENT_PROVIDER_TIMEOUT_MS")
     event_dedupe_window_minutes: int = Field(default=120, alias="EVENT_DEDUPE_WINDOW_MINUTES")
     event_max_data_age_seconds: int = Field(default=7200, alias="EVENT_MAX_DATA_AGE_SECONDS")
@@ -308,10 +400,22 @@ class Settings(BaseSettings):
     fusion_weight_polymarket: float = Field(default=0.15, alias="FUSION_WEIGHT_POLYMARKET")
     fusion_weight_wallet: float = Field(default=0.1, alias="FUSION_WEIGHT_WALLET")
     fusion_weight_event: float = Field(default=0.12, alias="FUSION_WEIGHT_EVENT")
-    fusion_weight_mirofish: float = Field(default=0.08, alias="FUSION_WEIGHT_MIROFISH")
+    fusion_weight_mirofish: float = Field(default=0.05, alias="FUSION_WEIGHT_MIROFISH")
     enable_provider_health_veto: bool = Field(default=True, alias="ENABLE_PROVIDER_HEALTH_VETO")
     execution_sim_latency_ms: int = Field(default=150, alias="EXECUTION_SIM_LATENCY_MS")
     execution_sim_partial_fill_pct: float = Field(default=0.5, alias="EXECUTION_SIM_PARTIAL_FILL_PCT")
+    paper_execution_base_spread_bps: float = Field(default=2.0, alias="PAPER_EXECUTION_BASE_SPREAD_BPS")
+    paper_execution_base_slippage_bps: float = Field(default=4.0, alias="PAPER_EXECUTION_BASE_SLIPPAGE_BPS")
+    paper_execution_depth_penalty_bps: float = Field(default=12.0, alias="PAPER_EXECUTION_DEPTH_PENALTY_BPS")
+    paper_execution_spread_weight: float = Field(default=0.65, alias="PAPER_EXECUTION_SPREAD_WEIGHT")
+    paper_execution_fill_latency_ms: int = Field(default=250, alias="PAPER_EXECUTION_FILL_LATENCY_MS")
+    paper_execution_latency_depth_penalty_ms: int = Field(default=600, alias="PAPER_EXECUTION_LATENCY_DEPTH_PENALTY_MS")
+    paper_execution_latency_adverse_selection_bps_per_sec: float = Field(default=6.0, alias="PAPER_EXECUTION_LATENCY_ADVERSE_SELECTION_BPS_PER_SEC")
+    paper_execution_adverse_selection_bps: float = Field(default=18.0, alias="PAPER_EXECUTION_ADVERSE_SELECTION_BPS")
+    paper_execution_fee_bps: float = Field(default=10.0, alias="PAPER_EXECUTION_FEE_BPS")
+    paper_execution_synthetic_depth_usd: float = Field(default=25000.0, alias="PAPER_EXECUTION_SYNTHETIC_DEPTH_USD")
+    paper_execution_max_book_levels: int = Field(default=5, alias="PAPER_EXECUTION_MAX_BOOK_LEVELS")
+    paper_execution_min_fill_ratio: float = Field(default=0.25, alias="PAPER_EXECUTION_MIN_FILL_RATIO")
     execution_quality_enabled: bool = Field(default=True, alias="EXECUTION_QUALITY_ENABLED")
     execution_quality_bad_score_threshold: float = Field(
         default=0.45,
@@ -326,6 +430,10 @@ class Settings(BaseSettings):
     enable_execution_anomaly_lock: bool = Field(default=True, alias="ENABLE_EXECUTION_ANOMALY_LOCK")
     enable_liquidity_thin_lock: bool = Field(default=True, alias="ENABLE_LIQUIDITY_THIN_LOCK")
     enable_basis_data_integrity_lock: bool = Field(default=True, alias="ENABLE_BASIS_DATA_INTEGRITY_LOCK")
+    provider_health_required_for_live: bool = Field(default=True, alias="PROVIDER_HEALTH_REQUIRED_FOR_LIVE")
+    promotion_required_for_live: bool = Field(default=True, alias="PROMOTION_REQUIRED_FOR_LIVE")
+    consecutive_loss_pause_count: int = Field(default=5, alias="CONSECUTIVE_LOSS_PAUSE_COUNT")
+    consecutive_loss_pause_minutes: int = Field(default=30, alias="CONSECUTIVE_LOSS_PAUSE_MINUTES")
     enable_portfolio_brain: bool = Field(default=True, alias="ENABLE_PORTFOLIO_BRAIN")
     portfolio_max_strategy_weight: float = Field(default=0.35, alias="PORTFOLIO_MAX_STRATEGY_WEIGHT")
     portfolio_max_market_weight: float = Field(default=0.4, alias="PORTFOLIO_MAX_MARKET_WEIGHT")
@@ -342,6 +450,8 @@ class Settings(BaseSettings):
     promotion_min_provider_health: float = Field(default=0.6, alias="PROMOTION_MIN_PROVIDER_HEALTH")
     replay_default_fidelity: str = Field(default="medium", alias="REPLAY_DEFAULT_FIDELITY")
     replay_allow_partial_external_data: bool = Field(default=True, alias="REPLAY_ALLOW_PARTIAL_EXTERNAL_DATA")
+    replay_walk_forward_min_days: int = Field(default=90, alias="REPLAY_WALK_FORWARD_MIN_DAYS")
+    replay_walk_forward_folds: int = Field(default=3, alias="REPLAY_WALK_FORWARD_FOLDS")
     enable_backfill_jobs: bool = Field(default=True, alias="ENABLE_BACKFILL_JOBS")
     backfill_batch_size: int = Field(default=250, alias="BACKFILL_BATCH_SIZE")
     backfill_retry_limit: int = Field(default=2, alias="BACKFILL_RETRY_LIMIT")
@@ -351,6 +461,29 @@ class Settings(BaseSettings):
         default=True,
         alias="INCIDENT_AUTO_CREATE_PROVIDER_FAILURE",
     )
+    latency_arb_enabled: bool = Field(default=False, alias="LATENCY_ARB_ENABLED")
+    latency_arb_paper_only: bool = Field(default=True, alias="LATENCY_ARB_PAPER_ONLY")
+    latency_arb_min_net_edge_bps: float = Field(default=800.0, alias="LATENCY_ARB_MIN_NET_EDGE_BPS")
+    latency_arb_min_depth_usd: float = Field(default=5000.0, alias="LATENCY_ARB_MIN_DEPTH_USD")
+    latency_arb_max_spread_bps: float = Field(default=300.0, alias="LATENCY_ARB_MAX_SPREAD_BPS")
+    latency_arb_max_data_age_sec: int = Field(default=10, alias="LATENCY_ARB_MAX_DATA_AGE_SEC")
+    latency_arb_symbols: list[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"], alias="LATENCY_ARB_SYMBOLS")
+    latency_arb_max_markets: int = Field(default=20, alias="LATENCY_ARB_MAX_MARKETS")
+    latency_arb_allowed_durations_minutes: list[int] = Field(
+        default_factory=lambda: [5, 15],
+        alias="LATENCY_ARB_ALLOWED_DURATIONS_MINUTES",
+    )
+    latency_arb_min_time_to_expiry_sec: int = Field(default=60, alias="LATENCY_ARB_MIN_TIME_TO_EXPIRY_SEC")
+    latency_arb_paper_order_notional_usd: float = Field(default=50.0, alias="LATENCY_ARB_PAPER_ORDER_NOTIONAL_USD")
+    latency_arb_execution_buffer_bps: float = Field(default=25.0, alias="LATENCY_ARB_EXECUTION_BUFFER_BPS")
+    latency_arb_require_realtime_reference: bool = Field(default=True, alias="LATENCY_ARB_REQUIRE_REALTIME_REFERENCE")
+    latency_arb_require_streaming_book: bool = Field(default=True, alias="LATENCY_ARB_REQUIRE_STREAMING_BOOK")
+    market_making_enabled: bool = Field(default=False, alias="MARKET_MAKING_ENABLED")
+    market_making_paper_only: bool = Field(default=True, alias="MARKET_MAKING_PAPER_ONLY")
+    market_making_live_enabled: bool = Field(default=False, alias="MARKET_MAKING_LIVE_ENABLED")
+    market_making_max_inventory_usd: float = Field(default=100.0, alias="MARKET_MAKING_MAX_INVENTORY_USD")
+    market_making_min_spread_bps: float = Field(default=150.0, alias="MARKET_MAKING_MIN_SPREAD_BPS")
+    market_making_reprice_threshold_bps: float = Field(default=75.0, alias="MARKET_MAKING_REPRICE_THRESHOLD_BPS")
     ops_enabled: bool = Field(default=True, alias="OPS_ENABLED")
     startup_preflight_enabled: bool = Field(default=True, alias="STARTUP_PREFLIGHT_ENABLED")
     require_persistence_for_boot: bool = Field(default=True, alias="REQUIRE_PERSISTENCE_FOR_BOOT")
@@ -420,6 +553,8 @@ class Settings(BaseSettings):
             "signals_supported_symbols",
             "alpha_feature_timeframes",
             "optimization_default_symbols",
+            "latency_arb_symbols",
+            "latency_arb_allowed_durations_minutes",
             "live_allowed_phases",
             "event_news_feed_urls",
             "cors_allowed_origins",
@@ -475,6 +610,17 @@ class Settings(BaseSettings):
     @classmethod
     def validate_optimization_default_symbols(cls, value: str | list[str] | tuple[str, ...]) -> list[str]:
         return _split_csv(value, upper=True)
+
+    @field_validator("latency_arb_symbols", mode="before")
+    @classmethod
+    def validate_latency_arb_symbols(cls, value: str | list[str] | tuple[str, ...]) -> list[str]:
+        return _split_csv(value, upper=True)
+
+    @field_validator("latency_arb_allowed_durations_minutes", mode="before")
+    @classmethod
+    def validate_latency_arb_durations(cls, value: str | list[int] | tuple[int, ...]) -> list[int]:
+        items = value.split(",") if isinstance(value, str) else value
+        return sorted({int(item) for item in items if int(item) > 0})
 
     @field_validator("live_allowed_phases", mode="before")
     @classmethod

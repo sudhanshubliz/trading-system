@@ -23,6 +23,7 @@ class PortfolioBrainService:
         risk_service: object | None = None,
         provider_health_service: object | None = None,
         promotion_service: object | None = None,
+        strategy_owner_service: object | None = None,
         repo: PortfolioBrainRepository | None = None,
         events_repo: EventsRepository | None = None,
     ) -> None:
@@ -31,12 +32,14 @@ class PortfolioBrainService:
         self.risk_service = risk_service
         self.provider_health_service = provider_health_service
         self.promotion_service = promotion_service
+        self.strategy_owner_service = strategy_owner_service
         self.repo = repo
         self.events_repo = events_repo
         self._latest_snapshot: PortfolioBrainSnapshot | None = None
 
     def generate_recommendations(self, *, execution_mode: str = "paper") -> PortfolioBrainSnapshot:
         fused = self.alpha_fusion_service.list_fused_signals(limit=100) if self.alpha_fusion_service is not None else []
+        owner_candidates = self.strategy_owner_service.list_candidates(limit=100) if self.strategy_owner_service is not None and hasattr(self.strategy_owner_service, "list_candidates") else []
         provider_summary = self.provider_health_service.build_summary() if self.provider_health_service is not None else {"unhealthy": 0}
         active_locks = self.risk_service.list_current_locks() if self.risk_service is not None and hasattr(self.risk_service, "list_current_locks") else []
         promotion_status = self.promotion_service.list_status() if self.promotion_service is not None and hasattr(self.promotion_service, "list_status") else []
@@ -50,6 +53,7 @@ class PortfolioBrainService:
         strategy_disables: list[str] = []
         watchlist: list[str] = []
         explanations: list[str] = []
+        correlated_exposures: dict[str, list[str]] = defaultdict(list)
         for item in fused:
             score = max(item.score, 0.0) * max(item.confidence, 0.0)
             if provider_summary.get("unhealthy", 0):
@@ -65,8 +69,16 @@ class PortfolioBrainService:
             bucket = self._infer_bucket(strategy_family=item.strategy_family, symbol=item.symbol)
             bucket_scores[bucket] += score
             bucket_members[bucket].append(item.strategy_family)
+            correlated_exposures[bucket].append(item.symbol)
             if item.veto_factors:
                 watchlist.append(item.symbol)
+        for candidate in owner_candidates:
+            bucket = self._infer_bucket(strategy_family=candidate.strategy_family, symbol=candidate.symbol_or_market)
+            bucket_members[bucket].append(candidate.strategy_family)
+            correlated_exposures[bucket].append(candidate.symbol_or_market)
+            if not candidate.tradable:
+                strategy_throttles.setdefault(candidate.strategy_family, 0.75)
+                explanations.append(f"strategy_owner_non_tradable:{candidate.strategy_family}:{candidate.symbol_or_market}")
         if active_locks:
             for lock in active_locks:
                 strategy_throttles[str(lock.get("scope_key", "system"))] = 0.5
@@ -97,6 +109,7 @@ class PortfolioBrainService:
                 continue
             throttle = round(cap / current, 6)
             explanations.append(f"bucket_cap_applied:{bucket} current={round(current, 6)} cap={cap}")
+            explanations.append(f"correlated_exposure_detected:{bucket} members={','.join(sorted(set(correlated_exposures.get(bucket, [])))[:5])}")
             for strategy_name in set(bucket_members.get(bucket, [])):
                 current_weight = capital_by_strategy.get(strategy_name, 0.0)
                 if current_weight <= 0:
@@ -128,6 +141,7 @@ class PortfolioBrainService:
                 "promotion_status_count": len(promotion_status),
                 "correlation_buckets": dict(bucket_scores),
                 "bucket_members": {key: sorted(set(value)) for key, value in bucket_members.items()},
+                "correlated_exposures": {key: sorted(set(value)) for key, value in correlated_exposures.items()},
             },
         )
         self._latest_snapshot = snapshot

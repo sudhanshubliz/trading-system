@@ -121,6 +121,7 @@ def build_portfolio_env(
         "persistence_enabled": True,
         "persistence_db_url": f"sqlite:///{tmp_path / 'portfolio.db'}",
         "portfolio_enabled": True,
+        "paper_account_start_balance": 10000.0,
         "portfolio_max_total_capital_pct": 100.0,
         "portfolio_max_per_strategy_pct": 40.0,
         "portfolio_max_per_symbol_pct": 35.0,

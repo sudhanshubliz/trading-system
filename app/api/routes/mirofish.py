@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 
-from app.schemas.mirofish import MiroFishRunRequest, MiroFishScenarioResponse
+from app.schemas.mirofish import MiroFishExternalScenarioRequest, MiroFishRunRequest, MiroFishScenarioResponse
 
 router = APIRouter(prefix="/simulation/mirofish")
 
@@ -31,6 +31,19 @@ def _get_service(request: Request) -> Any:
 async def run_mirofish(payload: MiroFishRunRequest, request: Request) -> MiroFishScenarioResponse:
     service = _get_service(request)
     item = service.run(symbol_or_market=payload.symbol_or_market, payload=payload.payload)
+    return MiroFishScenarioResponse.model_validate(_serialize(item))
+
+
+@router.post("/ingest", response_model=MiroFishScenarioResponse)
+async def ingest_mirofish(
+    payload: MiroFishExternalScenarioRequest,
+    request: Request,
+) -> MiroFishScenarioResponse:
+    service = _get_service(request)
+    try:
+        item = service.ingest_external(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return MiroFishScenarioResponse.model_validate(_serialize(item))
 
 

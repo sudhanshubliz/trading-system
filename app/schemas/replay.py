@@ -48,6 +48,9 @@ class ReplayTradeResultResponse(BaseModel):
     realized_pnl: float
     exit_reason: str | None = None
     status: str
+    gross_realized_pnl: float = 0.0
+    fees_paid: float = 0.0
+    slippage_cost: float = 0.0
 
 
 class ReplayMetricsResponse(BaseModel):
@@ -63,6 +66,10 @@ class ReplayMetricsResponse(BaseModel):
     unrealized_pnl_final: float
     ending_balance: float
     equity_curve: list[EquityPointResponse]
+    gross_realized_pnl_total: float = 0.0
+    fees_paid_total: float = 0.0
+    slippage_cost_total: float = 0.0
+    turnover_notional: float = 0.0
 
 
 class ReplayFidelityMetadataResponse(BaseModel):
