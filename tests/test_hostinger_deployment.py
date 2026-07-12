@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from scripts import verify_hostinger_deployment as verifier
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _responses() -> dict[str, dict[str, Any]]:
@@ -57,3 +61,10 @@ def test_hostinger_verifier_fails_if_mirofish_upstream_is_unhealthy(monkeypatch)
     assert report.ok is False
     assert "mirofish_available" in report.errors
     assert "provider_health" in report.errors
+
+
+def test_hostinger_compose_selects_upstream_amd64_image_explicitly() -> None:
+    compose = (REPO_ROOT / "deploy" / "docker-compose.hostinger.yml").read_text(encoding="utf-8")
+
+    assert "platform: ${MIROFISH_PLATFORM:-linux/amd64}" in compose
+    assert '"127.0.0.1:${TRADING_API_PORT:-8000}:8000"' in compose

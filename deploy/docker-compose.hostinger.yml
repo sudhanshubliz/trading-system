@@ -3,6 +3,8 @@ name: trading-research
 services:
   mirofish:
     image: ${MIROFISH_IMAGE:-ghcr.io/666ghj/mirofish:latest}
+    # Upstream currently publishes amd64 only. Docker Desktop emulates this on Apple Silicon.
+    platform: ${MIROFISH_PLATFORM:-linux/amd64}
     env_file:
       - ${MIROFISH_ENV_FILE:-./hostinger/mirofish.env}
     expose:

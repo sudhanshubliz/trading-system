@@ -44,6 +44,8 @@ Edit `deploy/hostinger/mirofish.env` directly on the VPS. Set a fresh `SECRET_KE
 
 ## Validate And Start
 
+The upstream MiroFish container currently publishes only `linux/amd64`. The supplied compose file selects that platform explicitly. It runs natively on Hostinger's x86 VPS; Docker Desktop uses emulation on Apple Silicon, so local startup and simulations may be slower. If upstream later publishes an ARM image, override `MIROFISH_PLATFORM` deliberately after validating that image.
+
 Validate the resolved compose configuration using the populated env files:
 
 ```bash
