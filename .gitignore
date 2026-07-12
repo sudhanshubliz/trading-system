@@ -13,3 +13,5 @@ __pycache__/
 /artifacts/
 /daily-checks/
 /logs/
+/deploy/hostinger/*.env
+!/deploy/hostinger/*.env.example

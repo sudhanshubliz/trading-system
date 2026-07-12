@@ -1,0 +1,90 @@
+name: trading-research
+
+services:
+  mirofish:
+    image: ${MIROFISH_IMAGE:-ghcr.io/666ghj/mirofish:latest}
+    env_file:
+      - ${MIROFISH_ENV_FILE:-./hostinger/mirofish.env}
+    expose:
+      - "5001"
+    volumes:
+      - mirofish-uploads:/app/backend/uploads
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/health', timeout=5)
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    networks:
+      - intelligence
+
+  trading-system:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file:
+      - ${TRADING_ENV_FILE:-./hostinger/trading-system.env}
+    environment:
+      APP_ENV: production
+      DATABASE_URL: sqlite:////app/data/trading_system.db
+      PERSISTENCE_DB_URL: sqlite:////app/data/trading_system_persistence.db
+      HTTP_PORT: "8000"
+      DEPLOYMENT_MODE: hostinger
+      TRADING_MODE: paper
+      EXECUTION_MODE: paper
+      ENABLE_LIVE_TRADING: "false"
+      LIVE_TRADING_ARMED: "false"
+      LIVE_EXECUTION_MODE: paper
+      ENABLE_MIROFISH: "true"
+      MIROFISH_PROVIDER: external
+      MIROFISH_BASE_URL: http://mirofish:5001
+      MIROFISH_VERIFY_TLS: "true"
+    ports:
+      - "127.0.0.1:${TRADING_API_PORT:-8000}:8000"
+    volumes:
+      - trading-system-data:/app/data
+    depends_on:
+      mirofish:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/readyz', timeout=5)
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    networks:
+      - intelligence
+
+networks:
+  intelligence:
+    driver: bridge
+
+volumes:
+  mirofish-uploads:
+  trading-system-data:

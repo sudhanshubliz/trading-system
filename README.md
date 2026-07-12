@@ -592,6 +592,9 @@ Or with compose:
 docker compose -f deploy/docker-compose.yml up --build
 ```
 
+For a private, paper-only Hostinger VPS deployment with MiroFish, use
+[`docs/hostinger_mirofish_deployment.md`](docs/hostinger_mirofish_deployment.md). The Hostinger compose stack keeps MiroFish and the trading API off public interfaces and includes a fail-closed verification command.
+
 ## Tests
 
 Run everything:
