@@ -664,6 +664,10 @@ async def shutdown(app: FastAPI) -> None:
     if polymarket_service is not None and hasattr(polymarket_service, "stop"):
         await polymarket_service.stop()
 
+    mirofish_adapter = getattr(app.state, "mirofish_adapter", None)
+    if mirofish_adapter is not None and hasattr(mirofish_adapter, "stop"):
+        await mirofish_adapter.stop()
+
     execution_service = getattr(app.state, "execution_service", None)
     if execution_service is not None and hasattr(execution_service, "stop"):
         await execution_service.stop()

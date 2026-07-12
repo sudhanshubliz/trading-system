@@ -362,6 +362,9 @@ New Phase 3 APIs:
 - `POST /api/v1/system/incidents/{id}/resolve`
 - `GET /api/v1/system/alerts/history`
 - `POST /api/v1/simulation/mirofish/run`
+- `POST /api/v1/simulation/mirofish/ingest`
+- `POST /api/v1/simulation/mirofish/sync`
+- `GET /api/v1/simulation/mirofish/health`
 - `GET /api/v1/simulation/mirofish/latest`
 - `POST /api/v1/research/backfill-jobs`
 - `GET /api/v1/research/backfill-jobs`
@@ -588,6 +591,9 @@ Or with compose:
 ```bash
 docker compose -f deploy/docker-compose.yml up --build
 ```
+
+For a private, paper-only Hostinger VPS deployment with MiroFish, use
+[`docs/hostinger_mirofish_deployment.md`](docs/hostinger_mirofish_deployment.md). The Hostinger compose stack keeps MiroFish and the trading API off public interfaces and includes a fail-closed verification command.
 
 ## Tests
 

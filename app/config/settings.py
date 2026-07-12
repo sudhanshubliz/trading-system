@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any
 
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, DotEnvSettingsSource, EnvSettingsSource, SettingsConfigDict
 
 
@@ -313,6 +313,9 @@ class Settings(BaseSettings):
     mirofish_adapter_mode: str = Field(default="mock", alias="MIROFISH_ADAPTER_MODE")
     mirofish_provider: str = Field(default="mock", alias="MIROFISH_PROVIDER")
     mirofish_adapter_path: str = Field(default="", alias="MIROFISH_ADAPTER_PATH")
+    mirofish_base_url: str = Field(default="http://127.0.0.1:5001", alias="MIROFISH_BASE_URL")
+    mirofish_auth_token: SecretStr | None = Field(default=None, alias="MIROFISH_AUTH_TOKEN")
+    mirofish_verify_tls: bool = Field(default=True, alias="MIROFISH_VERIFY_TLS")
     mirofish_timeout_ms: int = Field(default=1000, alias="MIROFISH_TIMEOUT_MS")
     mirofish_max_data_age_seconds: int = Field(default=120, alias="MIROFISH_MAX_DATA_AGE_SECONDS")
     mirofish_max_future_clock_skew_seconds: int = Field(default=30, alias="MIROFISH_MAX_FUTURE_CLOCK_SKEW_SECONDS")
@@ -648,6 +651,7 @@ class Settings(BaseSettings):
         "event_provider_mode",
         "replay_default_fidelity",
         "incident_alert_min_severity",
+        "mirofish_provider",
         mode="before",
     )
     @classmethod

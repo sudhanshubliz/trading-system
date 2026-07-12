@@ -8,6 +8,7 @@ from app.config.settings import Settings, get_settings
 from app.persistence.repositories.alpha_sources_repo import AlphaSourcesRepository
 from app.persistence.repositories.events_repo import EventsRepository
 from app.persistence.repositories.mirofish_repo import MiroFishRepository
+from app.simulation.mirofish_client import MiroFishRemoteClient
 from app.simulation.types import MiroFishScenarioSummary
 
 
@@ -25,11 +26,15 @@ class MiroFishAdapter:
         repo: MiroFishRepository | None = None,
         source_repo: AlphaSourcesRepository | None = None,
         events_repo: EventsRepository | None = None,
+        remote_client: MiroFishRemoteClient | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.repo = repo
         self.source_repo = source_repo
         self.events_repo = events_repo
+        self.remote_client = remote_client
+        if self.remote_client is None and self.settings.mirofish_provider in {"real", "external"}:
+            self.remote_client = MiroFishRemoteClient(settings=self.settings)
         self._latest: MiroFishScenarioSummary | None = None
         self._error_count = 0
         self._last_failure_at: datetime | None = None
@@ -39,7 +44,12 @@ class MiroFishAdapter:
             return self._disabled_summary(symbol_or_market)
         if self.settings.mirofish_provider in {"real", "external"}:
             latest = self.latest()
-            if latest is not None and latest.symbol_or_market == symbol_or_market and self._is_fresh(latest.timestamp):
+            if (
+                latest is not None
+                and latest.symbol_or_market == symbol_or_market
+                and self._is_fresh(latest.timestamp)
+                and self._is_valid_external_summary(latest)
+            ):
                 return latest
             return self._unavailable_external_summary(symbol_or_market)
 
@@ -72,6 +82,57 @@ class MiroFishAdapter:
         )
         self._store(summary)
         return summary
+
+    async def sync_remote(self, payload: dict[str, object]) -> MiroFishScenarioSummary:
+        """Verify upstream provenance before accepting a typed advisory scenario."""
+        if not self.settings.enable_mirofish:
+            raise ValueError("mirofish_disabled")
+        if self.settings.mirofish_provider not in {"real", "external"}:
+            raise ValueError("mirofish_external_provider_required")
+        if self.remote_client is None:
+            raise ValueError("mirofish_remote_client_unavailable")
+
+        simulation_id = str(payload.get("simulation_id") or "").strip()
+        if not simulation_id:
+            raise ValueError("simulation_id_required")
+        simulation = await self.remote_client.get_simulation(simulation_id)
+        report = await self.remote_client.get_report_by_simulation(simulation_id)
+        if report.status != "completed":
+            self._record_failure()
+            raise ValueError("mirofish_report_not_completed")
+        if simulation.status in {"failed", "error", "stopped"}:
+            self._record_failure()
+            raise ValueError("mirofish_simulation_not_usable")
+
+        metadata = dict(payload.get("metadata") or {})
+        metadata.update(
+            {
+                "upstream_provider": "666ghj_mirofish",
+                "upstream_simulation_id": simulation.simulation_id,
+                "upstream_simulation_status": simulation.status,
+                "upstream_simulation_updated_at": simulation.updated_at,
+                "upstream_report_id": report.report_id,
+                "upstream_report_status": report.status,
+                "upstream_report_created_at": report.created_at,
+                "upstream_report_completed_at": report.completed_at,
+                "report_text_used_as_signal": False,
+                "source_contract": "typed_operator_scenario_v1",
+            }
+        )
+        return self.ingest_external(
+            {
+                "scenario_id": payload.get("scenario_id") or report.report_id,
+                "symbol_or_market": payload.get("symbol_or_market"),
+                "simulation_timestamp": payload.get("simulation_timestamp"),
+                "direction_bias": payload.get("direction_bias"),
+                "expected_crowd_bias": payload.get("expected_crowd_bias"),
+                "expected_volatility_shift": payload.get("expected_volatility_shift"),
+                "scenario_confidence": payload.get("scenario_confidence"),
+                "explanation": payload.get("explanation"),
+                "source_run_id": simulation.simulation_id,
+                "metadata": metadata,
+            }
+        )
 
     def ingest_external(self, payload: dict[str, object]) -> MiroFishScenarioSummary:
         if not self.settings.enable_mirofish:
@@ -161,7 +222,7 @@ class MiroFishAdapter:
             timestamp=summary.timestamp,
         )
 
-    def health_check(self) -> dict[str, object]:
+    async def health_check(self) -> dict[str, object]:
         latest = self.latest()
         if not self.settings.enable_mirofish:
             return {
@@ -174,22 +235,43 @@ class MiroFishAdapter:
                 "metadata": {"source_is_mock": False, "advisory_only": True},
             }
         source_is_mock = self.settings.mirofish_provider == "mock"
-        stale = latest is None or not self._is_fresh(latest.timestamp)
-        status = "degraded" if stale or source_is_mock else "healthy"
+        valid_latest = latest is not None and (source_is_mock or self._is_valid_external_summary(latest))
+        stale = not valid_latest or latest is None or not self._is_fresh(latest.timestamp)
+        remote_health: dict[str, object] | None = None
+        if not source_is_mock and self.remote_client is not None:
+            remote_health = await self.remote_client.health_check()
+        remote_status = str((remote_health or {}).get("status") or "degraded")
+        status = "degraded" if stale or source_is_mock else remote_status
+        if remote_status == "unhealthy" and not source_is_mock:
+            status = "unhealthy"
+        notes = ["mock_advisory_only"] if source_is_mock else list((remote_health or {}).get("notes", []))
+        if stale and not source_is_mock:
+            notes.append("no_fresh_validated_scenario")
         return {
             "status": status,
-            "success_rate": 0.0 if latest is None else 1.0,
+            "latency_ms": float((remote_health or {}).get("latency_ms") or 0.0),
+            "success_rate": (
+                0.0 if latest is None and remote_health is None else float((remote_health or {}).get("success_rate", 1.0))
+            ),
             "stale_data_flag": stale,
-            "error_count": self._error_count,
-            "last_success_at": latest.timestamp if latest is not None else None,
-            "last_failure_at": self._last_failure_at,
-            "notes": ["mock_advisory_only"] if source_is_mock else [],
+            "error_count": self._error_count + int((remote_health or {}).get("error_count", 0)),
+            "last_success_at": (remote_health or {}).get(
+                "last_success_at",
+                latest.timestamp if valid_latest and latest is not None else None,
+            ),
+            "last_failure_at": (remote_health or {}).get("last_failure_at", self._last_failure_at),
+            "notes": list(dict.fromkeys(notes)),
             "metadata": {
                 "provider": self.settings.mirofish_provider,
                 "source_is_mock": source_is_mock,
                 "advisory_only": True,
+                "upstream": (remote_health or {}).get("metadata", {}),
             },
         }
+
+    async def stop(self) -> None:
+        if self.remote_client is not None:
+            await self.remote_client.close()
 
     def _disabled_summary(self, symbol_or_market: str) -> MiroFishScenarioSummary:
         summary = MiroFishScenarioSummary(
@@ -245,6 +327,9 @@ class MiroFishAdapter:
 
     def _is_fresh(self, timestamp: datetime) -> bool:
         return (utc_now() - timestamp).total_seconds() <= self.settings.mirofish_max_data_age_seconds
+
+    def _is_valid_external_summary(self, summary: MiroFishScenarioSummary) -> bool:
+        return summary.metadata.get("source_is_mock") is False and summary.provider_status == "healthy"
 
     def _record_failure(self) -> None:
         self._error_count += 1

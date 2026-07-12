@@ -5,7 +5,14 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 
-from app.schemas.mirofish import MiroFishExternalScenarioRequest, MiroFishRunRequest, MiroFishScenarioResponse
+from app.schemas.mirofish import (
+    MiroFishExternalScenarioRequest,
+    MiroFishHealthResponse,
+    MiroFishRemoteSyncRequest,
+    MiroFishRunRequest,
+    MiroFishScenarioResponse,
+)
+from app.simulation.mirofish_client import MiroFishRemoteError
 
 router = APIRouter(prefix="/simulation/mirofish")
 
@@ -45,6 +52,27 @@ async def ingest_mirofish(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return MiroFishScenarioResponse.model_validate(_serialize(item))
+
+
+@router.post("/sync", response_model=MiroFishScenarioResponse)
+async def sync_remote_mirofish(
+    payload: MiroFishRemoteSyncRequest,
+    request: Request,
+) -> MiroFishScenarioResponse:
+    service = _get_service(request)
+    try:
+        item = await service.sync_remote(payload.model_dump())
+    except MiroFishRemoteError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    return MiroFishScenarioResponse.model_validate(_serialize(item))
+
+
+@router.get("/health", response_model=MiroFishHealthResponse)
+async def get_mirofish_health(request: Request) -> MiroFishHealthResponse:
+    service = _get_service(request)
+    return MiroFishHealthResponse.model_validate(_serialize(await service.health_check()))
 
 
 @router.get("/latest", response_model=MiroFishScenarioResponse)
