@@ -1,6 +1,21 @@
 name: trading-research
 
 services:
+  config-preflight:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file:
+      - ${MIROFISH_ENV_FILE:-./hostinger/mirofish.env}
+      - ${TRADING_ENV_FILE:-./hostinger/trading-system.env}
+    command:
+      - python
+      - scripts/validate_hostinger_environment.py
+      - --environment
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
   mirofish:
     image: ${MIROFISH_IMAGE:-ghcr.io/666ghj/mirofish:latest}
     # Upstream currently publishes amd64 only. Docker Desktop emulates this on Apple Silicon.
@@ -32,6 +47,9 @@ services:
         max-file: "5"
     networks:
       - intelligence
+    depends_on:
+      config-preflight:
+        condition: service_completed_successfully
 
   trading-system:
     build:

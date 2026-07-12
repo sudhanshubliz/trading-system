@@ -42,6 +42,14 @@ chmod 600 deploy/hostinger/mirofish.env deploy/hostinger/trading-system.env
 
 Edit `deploy/hostinger/mirofish.env` directly on the VPS. Set a fresh `SECRET_KEY`, replacement `ZEP_API_KEY`, and the LLM provider fields. Do not send these values through chat or commit them.
 
+Run the local configuration preflight. It prints only field-level errors and never secret values:
+
+```bash
+python3 scripts/validate_hostinger_environment.py
+```
+
+The Compose stack repeats this check in a one-shot `config-preflight` container and refuses to start MiroFish when required values are missing, still placeholders, or live controls are not safely configured. MiroFish's own `/health` endpoint only proves its web service is alive; it does not validate LLM or Zep credentials.
+
 ## Validate And Start
 
 The upstream MiroFish container currently publishes only `linux/amd64`. The supplied compose file selects that platform explicitly. It runs natively on Hostinger's x86 VPS; Docker Desktop uses emulation on Apple Silicon, so local startup and simulations may be slower. If upstream later publishes an ARM image, override `MIROFISH_PLATFORM` deliberately after validating that image.
@@ -50,6 +58,7 @@ Validate the resolved compose configuration using the populated env files:
 
 ```bash
 docker compose -f deploy/docker-compose.hostinger.yml config --quiet
+docker compose -f deploy/docker-compose.hostinger.yml run --rm config-preflight
 ```
 
 Pull MiroFish, build the trading backend, and start the stack:

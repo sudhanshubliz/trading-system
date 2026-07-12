@@ -68,3 +68,5 @@ def test_hostinger_compose_selects_upstream_amd64_image_explicitly() -> None:
 
     assert "platform: ${MIROFISH_PLATFORM:-linux/amd64}" in compose
     assert '"127.0.0.1:${TRADING_API_PORT:-8000}:8000"' in compose
+    assert "condition: service_completed_successfully" in compose
+    assert "scripts/validate_hostinger_environment.py" in compose
